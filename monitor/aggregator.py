@@ -17,6 +17,7 @@ from typing import Optional
 
 from monitor.dexscreener import DexScreenerMonitor, DexTokenAlert
 from monitor.pumpfun import PumpFunMonitor, PumpFunAlert
+from monitor.birdeye import BirdeyeMonitor, BirdeyeAlert
 from monitor.social import SocialMonitor, aggregate_address_mentions
 from monitor.onchain import OnChainMonitor, OnChainAlert
 from storage.database import insert_detection, initialize_db
@@ -60,6 +61,7 @@ class TokenDetection:
     market_cap_usd: float = 0.0
     description: str = ""
     image_uri: str = ""
+    metadata_uri: str = ""
     is_pumpfun: bool = False
     is_graduated: bool = False  # True if migrated to Raydium
 
@@ -97,11 +99,13 @@ class MonitorAggregator:
         monitor_cfg = cfg.get("monitor", {})
         self._enable_dexscreener = monitor_cfg.get("enable_dexscreener", True)
         self._enable_pumpfun = monitor_cfg.get("enable_pumpfun", True)
+        self._enable_birdeye = monitor_cfg.get("enable_birdeye", True)
         self._enable_social = monitor_cfg.get("enable_social", True)
         self._enable_onchain = monitor_cfg.get("enable_onchain", False)  # WS optional
 
         self._dex_monitor: Optional[DexScreenerMonitor] = None
         self._pf_monitor: Optional[PumpFunMonitor] = None
+        self._be_monitor: Optional[BirdeyeMonitor] = None
         self._social_monitor: Optional[SocialMonitor] = None
         self._onchain_monitor: Optional[OnChainMonitor] = None
 
@@ -123,6 +127,10 @@ class MonitorAggregator:
             self._pf_monitor = PumpFunMonitor()
             await self._pf_monitor.__aenter__()
 
+        if self._enable_birdeye:
+            self._be_monitor = BirdeyeMonitor()
+            await self._be_monitor.__aenter__()
+
         if self._enable_social:
             self._social_monitor = SocialMonitor()
             await self._social_monitor.__aenter__()
@@ -138,6 +146,8 @@ class MonitorAggregator:
             await self._dex_monitor.__aexit__(*args)
         if self._pf_monitor:
             await self._pf_monitor.__aexit__(*args)
+        if self._be_monitor:
+            await self._be_monitor.__aexit__(*args)
         if self._social_monitor:
             await self._social_monitor.__aexit__(*args)
         if self._onchain_monitor:
@@ -163,6 +173,8 @@ class MonitorAggregator:
             tasks["dex"] = asyncio.create_task(self._dex_monitor.run_once())
         if self._pf_monitor:
             tasks["pf"] = asyncio.create_task(self._pf_monitor.run_once())
+        if self._be_monitor:
+            tasks["birdeye"] = asyncio.create_task(self._be_monitor.run_once())
         if self._social_monitor:
             tasks["social"] = asyncio.create_task(self._social_monitor.run_once())
         if self._onchain_monitor:
@@ -193,6 +205,11 @@ class MonitorAggregator:
         # pump.fun detections
         for alert in results.get("pf", []):
             d = self._from_pf_alert(alert)
+            self._merge_or_add(detection_map, d)
+
+        # Birdeye detections
+        for alert in results.get("birdeye", []):
+            d = self._from_birdeye_alert(alert)
             self._merge_or_add(detection_map, d)
 
         # On-chain detections
@@ -228,6 +245,10 @@ class MonitorAggregator:
                     holders=det.holders,
                     age_hours=det.age_hours,
                     social_mentions=det.social_mentions,
+                    # v2: metadata for mimicry
+                    image_uri=det.image_uri,
+                    metadata_uri=det.metadata_uri,
+                    original_description=det.description,
                 )
                 det.db_id = db_id
             except Exception as exc:
@@ -259,6 +280,9 @@ class MonitorAggregator:
             price_change_1h=alert.price_change_1h,
             age_hours=alert.age_hours,
             pool_address=alert.pair_address,
+            image_uri=alert.image_uri,
+            metadata_uri=alert.metadata_uri,
+            description=alert.original_description,
         )
 
     def _from_pf_alert(self, alert: PumpFunAlert) -> TokenDetection:
@@ -270,10 +294,27 @@ class MonitorAggregator:
             market_cap_usd=alert.market_cap_usd,
             description=alert.description,
             image_uri=alert.image_uri,
+            metadata_uri=alert.metadata_uri,
             age_hours=alert.age_hours,
             is_pumpfun=True,
             is_graduated=alert.is_migrated,
             pool_address=alert.raydium_pool,
+        )
+
+    def _from_birdeye_alert(self, alert: BirdeyeAlert) -> TokenDetection:
+        return TokenDetection(
+            token_address=alert.token_address,
+            token_name=alert.token_name,
+            token_symbol=alert.token_symbol,
+            sources=["birdeye"],
+            price_usd=alert.price_usd,
+            liquidity_usd=alert.liquidity_usd,
+            volume_24h=alert.volume_24h,
+            holders=alert.holders,
+            market_cap_usd=alert.market_cap_usd,
+            image_uri=alert.image_uri,
+            metadata_uri=alert.metadata_uri,
+            description=alert.description,
         )
 
     def _from_onchain_alert(self, alert: OnChainAlert) -> TokenDetection:
@@ -321,6 +362,10 @@ class MonitorAggregator:
             existing.token_symbol = new.token_symbol
         if not existing.description and new.description:
             existing.description = new.description
+        if not existing.image_uri and new.image_uri:
+            existing.image_uri = new.image_uri
+        if not existing.metadata_uri and new.metadata_uri:
+            existing.metadata_uri = new.metadata_uri
         if not existing.pool_address and new.pool_address:
             existing.pool_address = new.pool_address
 

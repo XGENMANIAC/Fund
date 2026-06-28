@@ -1,5 +1,5 @@
 """
-Streamlit Dashboard — Meme Coin Educational Detection System
+Streamlit Dashboard — Meme Coin Educational Detection System (v2)
 
 DISCLAIMER: Educational system for Solana devnet only.
 This dashboard is for monitoring and approving educational deployments.
@@ -7,10 +7,11 @@ Do NOT use for real trading decisions.
 
 Run with: streamlit run dashboard/app.py
 
-Features:
+Features (v2):
   - Live detection feed with filtering
   - Candidate queue with scores and risk flags
   - Approval queue (approve/reject from UI)
+  - 🪞 Side-by-side Original vs Clone comparison with image previews + diff
   - Deployment history
   - Post-launch monitoring charts
 """
@@ -31,7 +32,9 @@ from storage.database import (
     get_deployments,
     update_candidate_status,
     approve_generated_token,
+    get_variation_log,
     initialize_db,
+    get_connection,
 )
 from utils.helpers import format_usd, load_config
 
@@ -57,20 +60,27 @@ with st.sidebar:
 
     page = st.radio(
         "Navigation",
-        ["📡 Live Detections", "🎯 Candidates", "✅ Approvals", "🚀 Deployments", "📊 Monitoring"],
+        [
+            "📡 Live Detections",
+            "🎯 Candidates",
+            "✅ Approvals",
+            "🪞 Comparison",
+            "🚀 Deployments",
+            "📊 Monitoring",
+        ],
         index=0,
     )
 
     cfg = load_config()
     st.divider()
     st.caption(f"Network: **{cfg.get('network', 'devnet').upper()}**")
-    st.caption(f"Mode: **educational**")
-    st.caption(f"Approval gate: **{'ENABLED' if cfg.get('approval', {}).get('enabled', True) else 'DISABLED'}**")
+    st.caption("Mode: **educational**")
+    st.caption(
+        f"Approval gate: **{'ENABLED' if cfg.get('approval', {}).get('enabled', True) else 'DISABLED'}**"
+    )
 
     refresh = st.button("🔄 Refresh Data")
     auto_refresh = st.toggle("Auto-refresh (15s)", value=False)
-    if auto_refresh:
-        st.empty()  # auto_refresh handled below
 
 # ---------------------------------------------------------------------------
 # Auto-refresh
@@ -79,7 +89,6 @@ with st.sidebar:
 if auto_refresh:
     import time
     refresh_interval = cfg.get("dashboard", {}).get("auto_refresh_seconds", 15)
-    # Streamlit's built-in rerun on timer
     st.session_state.setdefault("last_refresh", 0)
     if time.time() - st.session_state["last_refresh"] > refresh_interval:
         st.session_state["last_refresh"] = time.time()
@@ -105,7 +114,7 @@ st.info(
 
 if page == "📡 Live Detections":
     st.title("📡 Live Token Detections")
-    st.caption("Tokens detected across DexScreener, pump.fun, and social monitors.")
+    st.caption("Tokens detected across DexScreener, pump.fun, Birdeye, and social monitors.")
 
     detections = get_recent_detections(limit=200)
 
@@ -135,13 +144,19 @@ if page == "📡 Live Detections":
         if "age_hours" in df.columns:
             df = df[df["age_hours"] <= max_age]
 
-        st.metric("Detections shown", len(df))
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Detections shown", len(df))
+        with_image = df["image_uri"].notna().sum() if "image_uri" in df.columns else 0
+        col_b.metric("With image", int(with_image))
+        with_desc = df["original_description"].notna().sum() if "original_description" in df.columns else 0
+        col_c.metric("With description", int(with_desc))
 
         # Format for display
         display_cols = [
             "detected_at", "source", "token_symbol", "token_name",
             "liquidity_usd", "volume_5m", "price_change_5m",
-            "age_hours", "social_mentions", "token_address",
+            "age_hours", "social_mentions",
+            "image_uri", "metadata_uri", "token_address",
         ]
         display_cols = [c for c in display_cols if c in df.columns]
         display_df = df[display_cols].copy()
@@ -166,6 +181,8 @@ if page == "📡 Live Detections":
             column_config={
                 "token_address": st.column_config.TextColumn("Address", width="medium"),
                 "price_change_5m": st.column_config.TextColumn("5m Chg"),
+                "image_uri": st.column_config.LinkColumn("Image", display_text="🖼"),
+                "metadata_uri": st.column_config.LinkColumn("Metadata", display_text="📄"),
             },
         )
 
@@ -175,15 +192,14 @@ if page == "📡 Live Detections":
 
 elif page == "🎯 Candidates":
     st.title("🎯 Scored Candidates")
-    st.caption("Tokens that passed the scoring threshold and are queued for review.")
-
-    from storage.database import get_connection
+    st.caption("Tokens that passed the scoring threshold.")
 
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT c.*, d.token_name, d.token_symbol, d.liquidity_usd,
-                   d.volume_5m, d.social_mentions, d.source
+                   d.volume_5m, d.social_mentions, d.source,
+                   d.image_uri, d.original_description
             FROM candidates c
             JOIN detections d ON d.id = c.detection_id
             ORDER BY c.score DESC
@@ -194,29 +210,47 @@ elif page == "🎯 Candidates":
     candidates = [dict(r) for r in rows]
 
     if not candidates:
-        st.info("No candidates scored yet. Run the bot with --mode analyze-only")
+        st.info("No candidates scored yet. Run: `python -m bot.main --mode analyze-only`")
     else:
         df = pd.DataFrame(candidates)
 
-        # Score distribution chart
-        if "score" in df.columns and len(df) > 1:
-            import plotly.express as px
-            fig = px.histogram(
-                df, x="score", nbins=20,
-                title="Score Distribution",
-                color_discrete_sequence=["#00D4AA"],
-            )
-            fig.update_layout(height=250, margin=dict(t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+        # Dual score distribution
+        col1, col2 = st.columns(2)
+        with col1:
+            if "score" in df.columns and len(df) > 1:
+                import plotly.express as px
+                fig = px.histogram(
+                    df, x="score", nbins=20,
+                    title="Virality Score Distribution",
+                    color_discrete_sequence=["#00D4AA"],
+                )
+                fig.update_layout(height=200, margin=dict(t=30, b=0))
+                st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            if "copy_viability" in df.columns and len(df) > 1:
+                import plotly.express as px
+                fig = px.histogram(
+                    df, x="copy_viability", nbins=20,
+                    title="Copy Viability Score Distribution",
+                    color_discrete_sequence=["#FFD700"],
+                )
+                fig.update_layout(height=200, margin=dict(t=30, b=0))
+                st.plotly_chart(fig, use_container_width=True)
 
         st.dataframe(
             df[[c for c in [
-                "scored_at", "status", "token_symbol", "score",
+                "scored_at", "status", "token_symbol", "score", "copy_viability",
                 "volume_score", "liquidity_score", "rug_risk_score",
-                "mint_revoked", "top10_pct", "token_address"
+                "has_image", "has_description", "has_metadata_uri",
+                "mint_revoked", "top10_pct", "token_address",
             ] if c in df.columns]],
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "score": st.column_config.ProgressColumn("Score", max_value=100),
+                "copy_viability": st.column_config.ProgressColumn("Copy Score", max_value=100),
+            },
         )
 
 # ---------------------------------------------------------------------------
@@ -231,12 +265,10 @@ elif page == "✅ Approvals":
         icon="⚠️",
     )
 
-    from storage.database import get_connection
-
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT gt.*, c.score, c.rug_risk_score, c.risk_flags_json
+            SELECT gt.*, c.score, c.rug_risk_score, c.copy_viability
             FROM generated_tokens gt
             JOIN candidates c ON c.id = gt.candidate_id
             WHERE gt.status = 'draft'
@@ -253,25 +285,32 @@ elif page == "✅ Approvals":
         for token in pending:
             with st.expander(
                 f"🪙 {token.get('new_name', '?')} ({token.get('new_symbol', '?')}) "
-                f"— Score: {token.get('score', 0):.0f}/100",
+                f"— Virality: {token.get('score', 0):.0f} | Copy: {token.get('copy_viability', 0):.0f}",
                 expanded=True,
             ):
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown(f"**Inspired by:** {token.get('source_name', 'N/A')}")
-                    st.markdown(f"**New name:** {token.get('new_name')}")
-                    st.markdown(f"**Symbol:** {token.get('new_symbol')}")
+                    st.markdown(f"**Clone of:** {token.get('source_name', 'N/A')} ({token.get('source_symbol', '?')})")
+                    st.markdown(f"**New name:** `{token.get('new_name')}`")
+                    st.markdown(f"**Symbol:** `{token.get('new_symbol')}`")
                     st.markdown(f"**Supply:** {token.get('new_supply', 0):,}")
+                    if token.get("mimicry_score"):
+                        st.markdown(f"**Mimicry score:** {token['mimicry_score']:.0f}%")
+                    if token.get("variation_rule"):
+                        st.caption(f"Rules: `{token['variation_rule']}`")
                 with col2:
-                    st.markdown(f"**Score:** {token.get('score', 0):.1f}")
-                    st.markdown(f"**Rug Risk:** {token.get('rug_risk_score', 0):.0f}")
+                    st.markdown(f"**Virality score:** {token.get('score', 0):.1f}/100")
+                    st.markdown(f"**Copy viability:** {token.get('copy_viability', 0):.1f}/100")
+                    st.markdown(f"**Rug Risk:** {token.get('rug_risk_score', 0):.0f}/100")
+                    if token.get("name_diff"):
+                        st.code(f"Name:   {token['name_diff']}\nSymbol: {token.get('symbol_diff', '')}")
 
                 st.caption(token.get("new_description", ""))
 
                 col_a, col_r = st.columns(2)
                 with col_a:
                     if st.button(
-                        f"✅ APPROVE (devnet only)",
+                        "✅ APPROVE (devnet only)",
                         key=f"approve_{token['id']}",
                         type="primary",
                     ):
@@ -279,16 +318,168 @@ elif page == "✅ Approvals":
                         st.success("Approved! Bot will pick this up in the next cycle.")
                         st.rerun()
                 with col_r:
-                    if st.button(
-                        f"❌ Reject",
-                        key=f"reject_{token['id']}",
-                    ):
+                    if st.button("❌ Reject", key=f"reject_{token['id']}"):
                         with get_connection() as conn:
                             conn.execute(
                                 "UPDATE generated_tokens SET status='rejected' WHERE id=?",
                                 (token["id"],),
                             )
                         st.rerun()
+
+# ---------------------------------------------------------------------------
+# Page: Side-by-side Comparison (v2 — new page)
+# ---------------------------------------------------------------------------
+
+elif page == "🪞 Comparison":
+    st.title("🪞 Original vs Clone Comparison")
+    st.caption(
+        "Side-by-side comparison of the original detected token and its educational clone, "
+        "with mimicry diff and variation rule audit log."
+    )
+
+    with get_connection() as conn:
+        tokens = conn.execute(
+            """
+            SELECT gt.id, gt.source_name, gt.source_symbol, gt.new_name, gt.new_symbol,
+                   gt.source_description, gt.new_description,
+                   gt.source_image_uri, gt.image_uri, gt.uploaded_image_uri,
+                   gt.name_diff, gt.symbol_diff, gt.description_diff,
+                   gt.variation_rule, gt.mimicry_score,
+                   gt.generated_at, gt.status,
+                   c.score, c.copy_viability
+            FROM generated_tokens gt
+            JOIN candidates c ON c.id = gt.candidate_id
+            ORDER BY gt.generated_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+
+    tokens = [dict(t) for t in tokens]
+
+    if not tokens:
+        st.info("No generated tokens yet. Run the bot to produce candidates.")
+    else:
+        # Token selector
+        labels = [
+            f"{t['source_symbol']} → {t['new_symbol']} ({t['generated_at'][:10]}) [{t['status']}]"
+            for t in tokens
+        ]
+        selected_idx = st.selectbox("Select token pair", range(len(labels)), format_func=lambda i: labels[i])
+        token = tokens[selected_idx]
+
+        # Mimicry score gauge
+        mimicry_score = token.get("mimicry_score") or 0.0
+        col_gauge, col_info = st.columns([1, 3])
+        with col_gauge:
+            from dashboard.components.charts import score_gauge
+            st.plotly_chart(score_gauge(mimicry_score, "Mimicry %"), use_container_width=True)
+        with col_info:
+            st.markdown(f"**Variation rule:** `{token.get('variation_rule', 'N/A')}`")
+            st.markdown(f"**Virality score:** {token.get('score', 0):.1f}/100")
+            st.markdown(f"**Copy viability:** {token.get('copy_viability', 0):.1f}/100")
+            st.markdown(f"**Status:** `{token.get('status', '?')}`")
+
+        st.divider()
+
+        # Side-by-side layout
+        left, right = st.columns(2)
+
+        # --- ORIGINAL ---
+        with left:
+            st.subheader(f"🔵 Original: {token['source_name']} ({token['source_symbol']})")
+
+            src_image = token.get("source_image_uri", "")
+            if src_image and src_image.startswith("http"):
+                try:
+                    st.image(src_image, caption="Original token image", width=200)
+                except Exception:
+                    st.caption(f"Image: {src_image}")
+            else:
+                st.caption("No image available")
+
+            src_desc = token.get("source_description", "")
+            if src_desc:
+                st.markdown("**Description:**")
+                st.text_area(
+                    "Original description",
+                    value=src_desc,
+                    height=120,
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
+            else:
+                st.caption("No description available")
+
+        # --- CLONE ---
+        with right:
+            st.subheader(f"🟢 Clone: {token['new_name']} ({token['new_symbol']})")
+
+            clone_image = token.get("uploaded_image_uri") or token.get("image_uri", "")
+            if clone_image and clone_image.startswith("http"):
+                try:
+                    st.image(clone_image, caption="Clone token image (re-uploaded)", width=200)
+                except Exception:
+                    st.caption(f"Image: {clone_image}")
+            else:
+                st.caption("No image (will use placeholder)")
+
+            new_desc = token.get("new_description", "")
+            if new_desc:
+                st.markdown("**Description:**")
+                st.text_area(
+                    "Clone description",
+                    value=new_desc,
+                    height=120,
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
+            else:
+                st.caption("No description generated")
+
+        st.divider()
+
+        # Diff view
+        st.subheader("Diff Summary")
+        diff_data = {
+            "Field": ["Name", "Symbol", "Description rule"],
+            "Original": [
+                token.get("source_name", ""),
+                token.get("source_symbol", ""),
+                "(source text)",
+            ],
+            "Clone": [
+                token.get("new_name", ""),
+                token.get("new_symbol", ""),
+                token.get("description_diff", ""),
+            ],
+            "Diff": [
+                token.get("name_diff", ""),
+                token.get("symbol_diff", ""),
+                token.get("variation_rule", ""),
+            ],
+        }
+        st.dataframe(pd.DataFrame(diff_data), use_container_width=True, hide_index=True)
+
+        # Variation audit log
+        st.subheader("Variation Rule Audit Log")
+        variation_log = get_variation_log(token["id"])
+        if variation_log:
+            vdf = pd.DataFrame(variation_log)
+            st.dataframe(
+                vdf[[c for c in [
+                    "logged_at", "field", "rule_name",
+                    "original_value", "modified_value", "similarity_pct",
+                ] if c in vdf.columns]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "similarity_pct": st.column_config.ProgressColumn(
+                        "Similarity %", max_value=100
+                    ),
+                },
+            )
+        else:
+            st.caption("No variation log entries yet for this token.")
 
 # ---------------------------------------------------------------------------
 # Page: Deployments
@@ -304,8 +495,12 @@ elif page == "🚀 Deployments":
         st.info("No deployments yet.")
     else:
         df = pd.DataFrame(deployments)
-        st.metric("Total deployments", len(df))
-        st.metric("Successful", len(df[df["status"] == "complete"]) if "status" in df.columns else 0)
+        col1, col2 = st.columns(2)
+        col1.metric("Total deployments", len(df))
+        col2.metric(
+            "Successful",
+            len(df[df["status"] == "complete"]) if "status" in df.columns else 0,
+        )
 
         st.dataframe(
             df[[c for c in [
@@ -317,7 +512,6 @@ elif page == "🚀 Deployments":
             hide_index=True,
         )
 
-        # Show Solscan devnet links for easy verification
         st.subheader("Devnet Explorer Links")
         for dep in deployments[:5]:
             if dep.get("mint_address"):
@@ -328,53 +522,94 @@ elif page == "🚀 Deployments":
                 )
 
 # ---------------------------------------------------------------------------
-# Page: Monitoring
+# Page: Post-Launch Monitoring
 # ---------------------------------------------------------------------------
 
 elif page == "📊 Monitoring":
     st.title("📊 Post-Launch Monitoring")
-    st.caption("Real-time metrics for deployed educational tokens.")
-
-    from storage.database import get_connection
+    st.caption("Real-time metrics for deployed educational tokens on devnet.")
 
     with get_connection() as conn:
         deployments = conn.execute(
-            "SELECT * FROM deployments WHERE status='complete' ORDER BY deployed_at DESC LIMIT 10"
+            """
+            SELECT d.*, gt.new_name, gt.new_symbol, gt.source_name
+            FROM deployments d
+            JOIN generated_tokens gt ON gt.id = d.generated_token_id
+            WHERE d.status='complete'
+            ORDER BY d.deployed_at DESC
+            LIMIT 10
+            """
         ).fetchall()
 
     if not deployments:
         st.info("No successful deployments to monitor yet.")
     else:
-        selected = st.selectbox(
+        dep_labels = [
+            f"{d['new_symbol']} (clone of {d['source_name']}) — {d['deployed_at'][:10]}"
+            for d in deployments
+        ]
+        selected_idx = st.selectbox(
             "Select deployment",
-            options=[f"{d['pool_id'] or d['mint_address']} (deployed {d['deployed_at'][:10]})"
-                     for d in deployments],
+            range(len(dep_labels)),
+            format_func=lambda i: dep_labels[i],
         )
+        dep = deployments[selected_idx]
 
-        if selected:
-            dep = deployments[0]  # simplified — production would match by selection
-            with get_connection() as conn:
-                snapshots = conn.execute(
-                    "SELECT * FROM monitoring_snapshots WHERE deployment_id=? ORDER BY snapshot_at",
-                    (dep["id"],),
-                ).fetchall()
+        with get_connection() as conn:
+            snapshots = conn.execute(
+                "SELECT * FROM monitoring_snapshots WHERE deployment_id=? ORDER BY snapshot_at",
+                (dep["id"],),
+            ).fetchall()
 
-            if snapshots:
-                snap_df = pd.DataFrame([dict(s) for s in snapshots])
-                import plotly.express as px
+        snap_list = [dict(s) for s in snapshots]
 
-                fig = px.line(
+        col1, col2, col3 = st.columns(3)
+        if snap_list:
+            latest = snap_list[-1]
+            col1.metric("Latest Price", f"${latest.get('price_usd', 0):.6f}")
+            col2.metric("Liquidity", format_usd(latest.get("liquidity_usd", 0)))
+            col3.metric("1h Volume", format_usd(latest.get("volume_1h", 0)))
+
+            snap_df = pd.DataFrame(snap_list)
+            import plotly.express as px
+            import plotly.graph_objects as go
+
+            # Price + liquidity dual-axis chart
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=snap_df["snapshot_at"], y=snap_df["price_usd"],
+                name="Price (USD)", line=dict(color="#00D4AA"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=snap_df["snapshot_at"], y=snap_df["liquidity_usd"],
+                name="Liquidity (USD)", line=dict(color="#FFD700"),
+                yaxis="y2",
+            ))
+            fig.update_layout(
+                title=f"{dep['new_symbol']} — Price & Liquidity (devnet)",
+                yaxis=dict(title="Price (USD)"),
+                yaxis2=dict(title="Liquidity (USD)", overlaying="y", side="right"),
+                height=350,
+                margin=dict(t=40, b=0),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Volume + holders
+            if "volume_1h" in snap_df.columns and "holders" in snap_df.columns:
+                fig2 = px.bar(
                     snap_df,
                     x="snapshot_at",
-                    y=["price_usd", "liquidity_usd"],
-                    title="Price & Liquidity Over Time",
+                    y="volume_1h",
+                    title="1h Volume Over Time",
+                    color_discrete_sequence=["#6BCB77"],
                 )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info(
-                    "No monitoring snapshots yet. The bot's post-launch monitor "
-                    "will populate this as it runs."
-                )
+                st.plotly_chart(fig2, use_container_width=True)
+        else:
+            col1.metric("Snapshots", 0)
+            st.info(
+                "No monitoring snapshots yet. "
+                "The bot's post-launch monitor will populate this as it runs."
+            )
 
         st.subheader("Educational: What This Chart Tells Us")
         st.markdown("""
@@ -382,11 +617,10 @@ elif page == "📊 Monitoring":
         typically show one of these patterns:
         - **Slow decay**: Nobody buys, liquidity slowly drains → **most common outcome**
         - **Brief spike then crash**: A few traders notice, then exit → **"pump and dump" pattern**
-        - **Steady growth**: Only happens if there's real organic community adoption → **very rare for copies**
+        - **Steady growth**: Only if there is real organic adoption → **very rare for copies**
 
         This simulation lets us study these dynamics safely on devnet.
         """)
-
 
 # ---------------------------------------------------------------------------
 # Footer

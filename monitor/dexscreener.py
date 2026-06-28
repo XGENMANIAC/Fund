@@ -59,6 +59,10 @@ class DexTokenAlert:
     age_hours: float = 0.0
     social_mentions: int = 0
     dex_url: str = ""
+    # v2: metadata fields for mimicry
+    image_uri: str = ""
+    metadata_uri: str = ""
+    original_description: str = ""
     detected_at: str = field(default_factory=utcnow_iso)
     raw: dict = field(default_factory=dict)
 
@@ -207,6 +211,15 @@ class DexScreenerMonitor:
             price_change = pair.get("priceChange", {})
             liquidity = pair.get("liquidity", {})
 
+            # v2: extract image, description, metadata from the info block
+            info = pair.get("info", {})
+            image_uri = info.get("imageUrl", "")
+            # DexScreener sometimes puts description in info.description
+            original_description = info.get("description", "")
+            # metadata_uri: first website URL if available (often points to token page)
+            websites = info.get("websites", [])
+            metadata_uri = websites[0].get("url", "") if websites else ""
+
             return DexTokenAlert(
                 token_address=token_addr,
                 pair_address=pair.get("pairAddress", ""),
@@ -222,6 +235,9 @@ class DexScreenerMonitor:
                 price_change_24h=float(price_change.get("h24", 0) or 0),
                 age_hours=age_hours,
                 dex_url=pair.get("url", ""),
+                image_uri=image_uri,
+                metadata_uri=metadata_uri,
+                original_description=original_description,
                 raw=pair,
             )
         except (KeyError, ValueError, TypeError) as exc:

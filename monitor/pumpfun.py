@@ -42,6 +42,7 @@ class PumpFunAlert:
     token_symbol: str = ""
     description: str = ""
     image_uri: str = ""
+    metadata_uri: str = ""
     creator: str = ""
     created_timestamp: int = 0
     age_hours: float = 0.0
@@ -265,8 +266,11 @@ class PumpFunMonitor:
                 token_address=mint,
                 token_name=coin.get("name", "")[:32],
                 token_symbol=coin.get("symbol", "")[:10],
-                description=coin.get("description", "")[:256],
-                image_uri=coin.get("image_uri", ""),
+                # Full description — no truncation so mimicry engine has full text
+                description=coin.get("description", "") or "",
+                image_uri=coin.get("image_uri", "") or "",
+                # metadata_uri: pump.fun stores Arweave/IPFS URI in metadata_uri field
+                metadata_uri=coin.get("metadata_uri", "") or "",
                 creator=coin.get("creator", ""),
                 created_timestamp=created_ts,
                 age_hours=age_hours,

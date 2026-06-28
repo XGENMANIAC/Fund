@@ -5,13 +5,13 @@ DISCLAIMER: Educational system for Solana devnet only.
 Do NOT use on mainnet without full legal and compliance review.
 
 This is the heart of the system. One cycle does:
-  1. Run all monitors (DexScreener, pump.fun, social, on-chain)
-  2. Score detections for virality + rug risk
-  3. Generate token specs for qualifying candidates
+  1. Run all monitors (DexScreener, pump.fun, Birdeye, social, on-chain)
+  2. Score detections for virality + copy viability
+  3. Generate token specs using the mimicry engine
   4. Present to operator for manual approval
   5. Deploy approved tokens to Raydium devnet
   6. Simulate post-launch "promotion" (print only — no real promotion)
-  7. Start monitoring the deployed pool
+  7. Start live monitoring loop for deployed pools (v2)
 """
 
 import asyncio
@@ -19,16 +19,28 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import aiohttp
+
 from monitor.aggregator import MonitorAggregator, TokenDetection
 from analysis.scorer import TokenScorer, ScoredCandidate
 from analysis.generator import TokenGenerator, GeneratedTokenSpec
 from bot.approval import ApprovalGate
 from deploy.pipeline import deploy_approved_token
-from storage.database import log_bot_run
+from storage.database import (
+    log_bot_run,
+    insert_monitoring_snapshot,
+    get_deployments,
+    get_connection,
+)
 from utils.logger import get_logger, log_banner
 from utils.helpers import load_config, utcnow_iso
 
 logger = get_logger(__name__)
+
+# How long to run the monitoring loop per deployment (default 2 hours)
+DEFAULT_MONITOR_DURATION_SECS = 7200
+# Snapshot interval
+DEFAULT_SNAPSHOT_INTERVAL_SECS = 60
 
 
 @dataclass
@@ -57,9 +69,6 @@ class BotPipeline:
         """
         Args:
             mode: "monitor-only" | "analyze-only" | "full"
-                  "monitor-only" — only detect, no scoring or deployment
-                  "analyze-only" — detect + score, no deployment
-                  "full" — complete pipeline with approval gate
         """
         cfg = load_config()
         if cfg.get("network") == "mainnet-beta":
@@ -68,6 +77,10 @@ class BotPipeline:
         self._mode = mode
         self._approval_gate = ApprovalGate()
         self._cycle_number = 0
+        self._cfg = cfg
+
+        # Background monitoring tasks keyed by deployment_id
+        self._monitor_tasks: dict[int, asyncio.Task] = {}
 
     async def run_cycle(self) -> CycleResult:
         """Run one complete detection → deploy cycle."""
@@ -100,11 +113,14 @@ class BotPipeline:
                     approved, spec = await self._generate_and_approve(candidate)
                     if approved and spec:
                         result.candidates_approved += 1
-                        deploy_ok = await self._deploy(candidate, spec)
+                        deploy_result, dep_id = await self._deploy(candidate, spec)
                         result.deployments_attempted += 1
-                        if deploy_ok:
+                        if deploy_result:
                             result.deployments_succeeded += 1
                             self._simulate_promotion(spec)
+                            # Start post-launch monitoring in background
+                            if dep_id is not None:
+                                self._start_pool_monitor(dep_id, spec)
                 except Exception as exc:
                     logger.error(f"Pipeline error for {candidate.token_address}: {exc}")
                     result.errors.append(str(exc))
@@ -138,44 +154,50 @@ class BotPipeline:
         self, candidate: ScoredCandidate
     ) -> tuple[bool, Optional[GeneratedTokenSpec]]:
         """
-        Generate a token spec and ask for operator approval.
-        Returns (approved, spec) — spec is None if not approved.
+        Generate a mimicry token spec and ask for operator approval.
+        Returns (approved, spec).
         """
         generator = TokenGenerator()
-        spec = generator.generate(candidate)
+        # Use async variant to attempt image re-upload
+        spec = await generator.generate_async(candidate)
         spec.db_id = generator.persist(spec, candidate.db_id or 0)
 
         logger.info(
             f"Generated: {spec.new_name} ({spec.new_symbol}) "
+            f"[mimicry={spec.mimicry_score:.0f}%] "
             f"[inspired by {candidate.token_name}]"
         )
 
-        # Approval gate (CLI interactive)
         approved = await self._approval_gate.request_approval_cli(candidate, spec)
         return approved, spec if approved else None
 
     async def _deploy(
         self, candidate: ScoredCandidate, spec: GeneratedTokenSpec
-    ) -> bool:
-        """Run the deployment pipeline. Returns True on success."""
+    ) -> tuple[bool, Optional[int]]:
+        """
+        Run the deployment pipeline.
+        Returns (success, deployment_id).
+        """
         logger.info(f"Deploying: {spec.new_name} on devnet")
         result = await deploy_approved_token(candidate, spec)
         success = result.get("success", False)
+        dep_id = result.get("deployment_id")
+
         if success:
             logger.info(
                 f"✓ Deployed {spec.new_name}: "
+                f"mint={result.get('mint_address', 'N/A')} "
                 f"pool={result.get('pool_id', 'N/A')}"
             )
         else:
-            logger.error(
-                f"✗ Deployment failed: {result.get('error', 'unknown error')}"
-            )
-        return success
+            logger.error(f"✗ Deployment failed: {result.get('error', 'unknown error')}")
+
+        return success, dep_id
 
     def _simulate_promotion(self, spec: GeneratedTokenSpec) -> None:
         """
-        Simulate post-launch "promotion" by printing what would be posted.
-        In an educational context this is just console output — NO actual posting.
+        Simulate post-launch "promotion" — console output only.
+        NO actual posting to social media or any external service.
         """
         post = self._generate_promo_text(spec)
         border = "-" * 50
@@ -186,7 +208,6 @@ class BotPipeline:
         logger.info(f"{border}\n")
 
     def _generate_promo_text(self, spec: GeneratedTokenSpec) -> str:
-        """Generate example social post text for educational display."""
         return (
             f"🚀 {spec.new_name} (${spec.new_symbol}) is LIVE on Solana devnet! 🌙\n"
             f"Total supply: {spec.new_supply:,}\n"
@@ -195,6 +216,157 @@ class BotPipeline:
             f"\n[This is an educational simulation. "
             f"This token is on devnet and has no real value.]"
         )
+
+    # ------------------------------------------------------------------
+    # Post-launch pool monitoring (v2)
+    # ------------------------------------------------------------------
+
+    def _start_pool_monitor(
+        self,
+        deployment_id: int,
+        spec: GeneratedTokenSpec,
+    ) -> None:
+        """
+        Launch a background asyncio task that periodically snapshots the
+        deployed pool's state and writes to monitoring_snapshots table.
+
+        The task runs until duration expires or the pipeline shuts down.
+        Uses DexScreener's free API to get pool metrics.
+        """
+        if deployment_id in self._monitor_tasks:
+            existing = self._monitor_tasks[deployment_id]
+            if not existing.done():
+                logger.debug(f"Monitor already running for deployment {deployment_id}")
+                return
+
+        task = asyncio.create_task(
+            self._pool_monitor_loop(deployment_id, spec),
+            name=f"pool-monitor-{deployment_id}",
+        )
+        self._monitor_tasks[deployment_id] = task
+        logger.info(f"Started pool monitor for deployment {deployment_id}")
+
+    async def _pool_monitor_loop(
+        self,
+        deployment_id: int,
+        spec: GeneratedTokenSpec,
+    ) -> None:
+        """
+        Continuously snapshots pool metrics from DexScreener for up to
+        DEFAULT_MONITOR_DURATION_SECS seconds.
+        """
+        cfg_monitor = self._cfg.get("monitoring", {})
+        duration = cfg_monitor.get("duration_seconds", DEFAULT_MONITOR_DURATION_SECS)
+        interval = cfg_monitor.get("snapshot_interval_seconds", DEFAULT_SNAPSHOT_INTERVAL_SECS)
+
+        # Fetch pool_id from deployment record
+        pool_id = await self._get_pool_id(deployment_id)
+        if not pool_id:
+            logger.warning(f"No pool_id found for deployment {deployment_id} — monitor skipped")
+            return
+
+        deadline = time.monotonic() + duration
+        snapshot_count = 0
+
+        logger.info(
+            f"Pool monitor started: pool={pool_id[:12]}… "
+            f"interval={interval}s duration={duration}s"
+        )
+
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15)
+        ) as session:
+            while time.monotonic() < deadline:
+                try:
+                    metrics = await self._fetch_pool_metrics(session, pool_id)
+                    if metrics:
+                        insert_monitoring_snapshot(
+                            deployment_id=deployment_id,
+                            pool_id=pool_id,
+                            **metrics,
+                        )
+                        snapshot_count += 1
+                        logger.debug(
+                            f"Snapshot #{snapshot_count} for {pool_id[:12]}…: "
+                            f"price=${metrics.get('price_usd', 0):.6f} "
+                            f"liq=${metrics.get('liquidity_usd', 0):,.0f}"
+                        )
+                except Exception as exc:
+                    logger.warning(f"Pool monitor snapshot error: {exc}")
+
+                await asyncio.sleep(interval)
+
+        logger.info(
+            f"Pool monitor completed for deployment {deployment_id}: "
+            f"{snapshot_count} snapshots over {duration}s"
+        )
+
+    async def _fetch_pool_metrics(
+        self, session: aiohttp.ClientSession, pool_id: str
+    ) -> Optional[dict]:
+        """
+        Fetch current pool metrics from DexScreener's free pair endpoint.
+        Returns a dict suitable for insert_monitoring_snapshot kwargs.
+        """
+        url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{pool_id}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 429:
+                    await asyncio.sleep(15)
+                    return None
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+            pairs = data.get("pairs", [])
+            if not pairs:
+                return None
+
+            pair = pairs[0]
+            volume = pair.get("volume", {})
+            liquidity = pair.get("liquidity", {})
+            price_change = pair.get("priceChange", {})
+
+            return {
+                "price_usd": float(pair.get("priceUsd", 0) or 0),
+                "liquidity_usd": float(liquidity.get("usd", 0) or 0),
+                "volume_1h": float(volume.get("h1", 0) or 0),
+                "volume_24h": float(volume.get("h24", 0) or 0),
+                "price_change_1h": float(price_change.get("h1", 0) or 0),
+                "market_cap_usd": float(pair.get("fdv", 0) or 0),
+                "tx_count_1h": int(pair.get("txns", {}).get("h1", {}).get("buys", 0)
+                                   + pair.get("txns", {}).get("h1", {}).get("sells", 0)),
+            }
+        except Exception:
+            return None
+
+    async def _get_pool_id(self, deployment_id: int) -> Optional[str]:
+        """Look up the pool_id from the deployments table."""
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT pool_id FROM deployments WHERE id=?",
+                    (deployment_id,),
+                ).fetchone()
+            return row["pool_id"] if row and row["pool_id"] else None
+        except Exception:
+            return None
+
+    async def stop_all_monitors(self) -> None:
+        """Cancel all background pool monitoring tasks (call on shutdown)."""
+        for dep_id, task in list(self._monitor_tasks.items()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._monitor_tasks.clear()
+        logger.info("All pool monitors stopped")
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
 
     def _log_cycle(self, result: CycleResult) -> None:
         """Persist the cycle summary to the DB."""
