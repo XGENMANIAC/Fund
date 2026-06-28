@@ -1,0 +1,80 @@
+# =============================================================================
+# Python Dependencies — Solana Meme Coin Educational System
+# =============================================================================
+# DISCLAIMER: For educational and testing purposes only. Devnet use only.
+# All packages are free and open-source.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Solana blockchain interaction
+# ---------------------------------------------------------------------------
+solana==0.34.3                  # Python Solana SDK
+solders==0.21.0                 # Rust-backed Solana primitives (used by solana-py)
+anchorpy==0.20.1                # Anchor framework client (for program interactions)
+
+# ---------------------------------------------------------------------------
+# Web scraping (Playwright — async, handles JS-heavy pages)
+# ---------------------------------------------------------------------------
+playwright==1.44.0
+# After pip install, run: playwright install chromium
+
+# ---------------------------------------------------------------------------
+# HTTP requests and async I/O
+# ---------------------------------------------------------------------------
+aiohttp==3.9.5                  # Async HTTP client
+requests==2.32.3                # Sync HTTP client (for simple API calls)
+httpx==0.27.0                   # Modern HTTP client with async support
+
+# ---------------------------------------------------------------------------
+# Data processing
+# ---------------------------------------------------------------------------
+pandas==2.2.2
+numpy==1.26.4
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+streamlit==1.36.0
+plotly==5.22.0                  # Interactive charts for Streamlit
+watchdog==4.0.1                 # Streamlit file watcher
+
+# ---------------------------------------------------------------------------
+# Configuration and environment
+# ---------------------------------------------------------------------------
+pyyaml==6.0.1                   # YAML config file parsing
+python-dotenv==1.0.1            # .env file loading
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+# sqlite3 is built-in to Python — no extra package needed
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+rich==13.7.1                    # Beautiful terminal output / logging
+click==8.1.7                    # CLI argument parsing
+schedule==1.2.2                 # Simple job scheduler for the bot loop
+tenacity==8.3.0                 # Retry logic with exponential backoff
+python-dateutil==2.9.0          # Date parsing helpers
+pytz==2024.1                    # Timezone handling
+
+# ---------------------------------------------------------------------------
+# Metadata / IPFS (free tiers)
+# ---------------------------------------------------------------------------
+py-ipfs-http-client==0.8.0a2   # IPFS HTTP client (optional, for local IPFS node)
+Pillow==10.3.0                  # Image handling for token icon generation
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+cryptography==42.0.8            # For keypair handling helpers
+base58==2.1.1                   # Base58 encoding (Solana addresses)
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+pytest==8.2.2
+pytest-asyncio==0.23.7
+pytest-mock==3.14.0
+responses==0.25.3               # Mock HTTP responses in tests

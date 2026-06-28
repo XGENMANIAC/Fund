@@ -1,0 +1,28 @@
+{
+  "name": "solana-meme-raydium-deployer",
+  "version": "1.0.0",
+  "description": "Educational Raydium pool deployer for Solana devnet — for research purposes only",
+  "private": true,
+  "type": "module",
+  "main": "raydium_deploy.js",
+  "scripts": {
+    "deploy": "node raydium_deploy.js",
+    "create-market": "node create_market.js",
+    "create-pool": "node create_pool.js",
+    "test": "node --test"
+  },
+  "keywords": ["solana", "raydium", "educational", "devnet"],
+  "license": "MIT",
+  "dependencies": {
+    "@raydium-io/raydium-sdk-v2": "^0.1.95",
+    "@solana/web3.js": "^1.95.3",
+    "@solana/spl-token": "^0.4.8",
+    "@openbook-dex/openbook-v2": "^0.0.7",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
