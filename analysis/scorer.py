@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from monitor.aggregator import TokenDetection
+from analysis.copy_scorer import CopyScorer, CopyViabilityResult
 from storage.database import insert_candidate
 from utils.logger import get_logger
 from utils.helpers import load_config
@@ -48,6 +49,13 @@ class ScoredCandidate:
 
     # Composite
     composite_score: float = 0.0
+
+    # Copy viability (v2)
+    copy_viability: float = 0.0
+    has_image: bool = False
+    has_description: bool = False
+    has_metadata_uri: bool = False
+    metadata_fetchable: bool = False
 
     # On-chain risk flags (fetched via RPC)
     mint_revoked: bool = False
@@ -102,29 +110,35 @@ class TokenScorer:
         self._skip_high_rug = filters.get("skip_high_rug_risk", True)
         self._network = cfg.get("network", "devnet")
 
+        # v2: copy viability scorer (shared session across batch)
+        self._copy_scorer: Optional[CopyScorer] = None
+
     async def score_batch(
         self,
         detections: list[TokenDetection],
     ) -> list[ScoredCandidate]:
         """
-        Score a batch of detections concurrently (RPC calls batched where possible).
+        Score a batch of detections. Runs copy_viability assessment concurrently.
         Returns only those meeting the minimum score threshold.
         """
         results = []
-        for det in detections:
-            try:
-                candidate = await self.score_one(det)
-                if candidate.composite_score >= self._min_score:
-                    if self._skip_high_rug and candidate.rug_risk_score >= 80:
-                        logger.info(
-                            f"Skipping {det.token_address[:8]}... "
-                            f"(rug risk too high: {candidate.rug_risk_score:.0f})"
-                        )
-                        continue
-                    results.append(candidate)
-                    self._persist_candidate(candidate, det)
-            except Exception as exc:
-                logger.error(f"Scoring failed for {det.token_address}: {exc}")
+        async with CopyScorer() as copy_scorer:
+            self._copy_scorer = copy_scorer
+            for det in detections:
+                try:
+                    candidate = await self.score_one(det)
+                    if candidate.composite_score >= self._min_score:
+                        if self._skip_high_rug and candidate.rug_risk_score >= 80:
+                            logger.info(
+                                f"Skipping {det.token_address[:8]}... "
+                                f"(rug risk too high: {candidate.rug_risk_score:.0f})"
+                            )
+                            continue
+                        results.append(candidate)
+                        self._persist_candidate(candidate, det)
+                except Exception as exc:
+                    logger.error(f"Scoring failed for {det.token_address}: {exc}")
+            self._copy_scorer = None
 
         logger.info(
             f"Scored {len(detections)} detections: "
@@ -169,6 +183,22 @@ class TokenScorer:
         )
         candidate.composite_score = max(0.0, min(100.0, raw))
 
+        # --- Copy viability score (v2) ---
+        if self._copy_scorer is not None:
+            copy_result = await self._copy_scorer.score(
+                token_address=det.token_address,
+                token_name=det.token_name,
+                token_symbol=det.token_symbol,
+                image_uri=getattr(det, "image_uri", ""),
+                description=getattr(det, "description", ""),
+                metadata_uri=getattr(det, "metadata_uri", ""),
+            )
+            candidate.copy_viability = copy_result.copy_viability
+            candidate.has_image = copy_result.has_image
+            candidate.has_description = copy_result.has_description
+            candidate.has_metadata_uri = copy_result.has_metadata_uri
+            candidate.metadata_fetchable = copy_result.metadata_fetchable
+
         logger.debug(
             f"{det.token_symbol or det.token_address[:8]}: "
             f"vol={candidate.volume_score:.0f} "
@@ -176,6 +206,7 @@ class TokenScorer:
             f"hold={candidate.holder_score:.0f} "
             f"soc={candidate.social_score:.0f} "
             f"rug={candidate.rug_risk_score:.0f} "
+            f"copy={candidate.copy_viability:.0f} "
             f"=> composite={candidate.composite_score:.1f}"
         )
         return candidate
@@ -385,10 +416,15 @@ class TokenScorer:
                 holder_score=candidate.holder_score,
                 social_score=candidate.social_score,
                 rug_risk_score=candidate.rug_risk_score,
+                copy_viability=candidate.copy_viability,
                 mint_revoked=candidate.mint_revoked,
                 freeze_revoked=candidate.freeze_revoked,
                 lp_locked=candidate.lp_locked,
                 top10_pct=candidate.top10_pct,
+                has_image=candidate.has_image,
+                has_description=candidate.has_description,
+                has_metadata_uri=candidate.has_metadata_uri,
+                metadata_fetchable=candidate.metadata_fetchable,
             )
             candidate.db_id = db_id
         except Exception as exc:
