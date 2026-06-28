@@ -1,0 +1,180 @@
+# =============================================================================
+# SOLANA MEME COIN EDUCATIONAL SYSTEM — EXAMPLE CONFIGURATION
+# =============================================================================
+# DISCLAIMER: This configuration is for educational and testing purposes only.
+# Use exclusively on Solana devnet/testnet.
+# Do NOT use on mainnet without full legal and compliance review.
+# =============================================================================
+# Copy this file to config.yaml and fill in your values.
+# Never commit config.yaml with real private key paths to version control.
+
+# ---------------------------------------------------------------------------
+# Network settings
+# ---------------------------------------------------------------------------
+network: devnet                           # NEVER change to mainnet-beta
+
+rpc:
+  endpoints:
+    - https://api.devnet.solana.com       # Primary (devnet)
+    - https://devnet.helius-rpc.com       # Fallback (free tier Helius devnet)
+  max_retries: 5
+  retry_backoff_base: 1.5                 # Exponential backoff multiplier
+  timeout_seconds: 30
+  ws_endpoint: wss://api.devnet.solana.com  # WebSocket for subscriptions
+
+# ---------------------------------------------------------------------------
+# Wallet (devnet only — never use a mainnet wallet)
+# ---------------------------------------------------------------------------
+wallet:
+  keypair_path: ~/.config/solana/devnet-test.json
+  # Optional: pass as env var WALLET_KEYPAIR_PATH for security
+
+# ---------------------------------------------------------------------------
+# Monitoring / Detection settings
+# ---------------------------------------------------------------------------
+monitor:
+  poll_interval: 60                       # Seconds between full scrape cycles
+  enable_dexscreener: true
+  enable_pumpfun: true
+  enable_social: true                     # Twitter/X public search (Playwright)
+  enable_onchain: true                    # WebSocket RPC log subscription
+
+  dexscreener:
+    base_url: https://api.dexscreener.com
+    trending_endpoint: /latest/dex/tokens/recently-added  # Free endpoint
+    chain: solana
+    # How many results to fetch per poll
+    max_results: 50
+
+  pumpfun:
+    url: https://pump.fun
+    # Playwright scroll depth before collecting tokens
+    scroll_rounds: 3
+    # Wait milliseconds for dynamic content to load
+    load_wait_ms: 2000
+
+  social:
+    search_terms:
+      - "solana meme coin launch"
+      - "$SOL new token"
+      - "just launched solana"
+    results_per_term: 20
+    # Minimum mentions to flag a token
+    min_mentions: 3
+
+  onchain:
+    # Program IDs to watch for new pool creation events
+    raydium_amm_program: 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
+    # Log out of filter to detect new mint/pool events
+    commitment: confirmed
+
+# ---------------------------------------------------------------------------
+# Filters — scoring thresholds to decide what gets queued
+# ---------------------------------------------------------------------------
+filters:
+  # Minimum liquidity in USD to consider a token
+  min_liquidity_usd: 5000
+  # Minimum 5-minute volume (USD) to consider
+  min_volume_5m: 500
+  # Minimum number of holders
+  min_holders: 50
+  # Maximum age of the token in hours (to catch new launches)
+  max_age_hours: 2
+  # Minimum composite score (0–100) to queue for approval
+  min_score: 60
+  # Risk filter: skip tokens where mint authority is NOT revoked
+  require_mint_revoked: false             # Set true for stricter filter
+  # Skip obvious rugpull signals
+  skip_high_rug_risk: true
+  # Minimum social mentions across all platforms
+  min_social_mentions: 2
+
+# ---------------------------------------------------------------------------
+# Analysis / Scoring weights (must sum to 1.0)
+# ---------------------------------------------------------------------------
+scoring:
+  weights:
+    volume_momentum: 0.30
+    liquidity_depth: 0.20
+    holder_growth: 0.20
+    social_buzz: 0.15
+    rug_risk_penalty: 0.15               # Subtracted from score
+
+# ---------------------------------------------------------------------------
+# Token generation (for the educational "clone")
+# ---------------------------------------------------------------------------
+token_generation:
+  # Strategy for generating the new token name
+  # Options: "append_suffix", "synonym_swap", "ai_riff"
+  name_strategy: append_suffix
+  suffixes:
+    - "2.0"
+    - "Reloaded"
+    - "Classic"
+    - "OG"
+    - "Genesis"
+  # Default supply (1 billion — common meme coin convention)
+  default_supply: 1_000_000_000
+  # Decimals (6 is standard for Solana meme coins)
+  decimals: 6
+  # Percentage of supply to put in the liquidity pool
+  pool_supply_pct: 0.80
+  # Percentage retained (for simulation — in real launches this is the "team" allocation)
+  retained_pct: 0.20
+
+# ---------------------------------------------------------------------------
+# Metadata hosting (free tiers)
+# ---------------------------------------------------------------------------
+metadata:
+  # Options: "local_uri", "nft_storage", "web3_storage", "pinata_free"
+  # "local_uri" serves from localhost — devnet only, not publicly accessible
+  provider: local_uri
+  local_server_port: 8765
+  # If using nft.storage or web3.storage: set API key in .env
+
+# ---------------------------------------------------------------------------
+# Deployment (devnet only)
+# ---------------------------------------------------------------------------
+deploy:
+  # SOL to add as initial liquidity (devnet SOL — no real value)
+  initial_sol: 0.1
+  # Token % to add as initial liquidity (from pool_supply_pct above)
+  initial_token_pct: 1.0
+  # Raydium AMM program ID (devnet version)
+  raydium_amm: 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8
+  # OpenBook/Serum DEX program (devnet)
+  serum_dex: EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVAPHTKrg56tYvR
+  # Revoke authorities after pool creation (for "fair launch" simulation)
+  revoke_mint_authority: true
+  revoke_freeze_authority: true
+  revoke_update_authority: false          # Keep for metadata updates in testing
+  # Slippage tolerance for pool creation transactions (in basis points)
+  slippage_bps: 100
+
+# ---------------------------------------------------------------------------
+# Approval gate (MUST be enabled for educational safety)
+# ---------------------------------------------------------------------------
+approval:
+  enabled: true                           # NEVER disable this
+  # How long (seconds) before a pending approval expires
+  timeout_seconds: 300
+  # Required confirmation phrase to approve (prevents accidental approvals)
+  confirm_phrase: "I_CONFIRM_DEVNET_ONLY"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO                             # DEBUG | INFO | WARNING | ERROR
+  file: data/bot.log
+  max_bytes: 10_485_760                   # 10 MB
+  backup_count: 5
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+dashboard:
+  port: 8501
+  auto_refresh_seconds: 15
+  max_detections_shown: 100
