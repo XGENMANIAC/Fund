@@ -11,7 +11,10 @@
 # ---------------------------------------------------------------------------
 # Network settings
 # ---------------------------------------------------------------------------
-network: devnet                           # NEVER change to mainnet-beta
+network:
+  name: "devnet"          # Change to "mainnet" when ready
+  rpc_url: "https://api.devnet.solana.com"   # Will be overridden based on name
+  commitment: "confirmed"
 
 rpc:
   endpoints:

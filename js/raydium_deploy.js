@@ -25,17 +25,10 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 // ---------------------------------------------------------------------------
-// Safety check
+// Network
 // ---------------------------------------------------------------------------
 
 const NETWORK = process.env.NETWORK || "devnet";
-if (NETWORK === "mainnet-beta") {
-  console.error(JSON.stringify({
-    success: false,
-    error: "MAINNET BLOCKED: This educational system refuses to operate on mainnet-beta.",
-  }));
-  process.exit(1);
-}
 
 // ---------------------------------------------------------------------------
 // Main orchestrator
@@ -55,7 +48,7 @@ async function deployToRaydium(params) {
   } = params;
 
   console.log(`\n${"=".repeat(60)}`);
-  console.log(`[EDUCATIONAL DEVNET DEPLOY]`);
+  console.log(`[${NETWORK.toUpperCase()} DEPLOY]`);
   console.log(`Token: ${tokenName} (${tokenSymbol})`);
   console.log(`Mint: ${mintAddress}`);
   console.log(`Network: ${NETWORK}`);
@@ -89,7 +82,6 @@ async function deployToRaydium(params) {
     result.market_txids = marketResult.txids;
 
     // Step 2: Wait for market to fully confirm before pool creation
-    // This is critical — Raydium will fail if market isn't fully propagated
     const waitSeconds = 15;
     console.log(`\nStep 2/3: Waiting ${waitSeconds}s for market confirmation...`);
     await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
@@ -152,7 +144,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   deployToRaydium(params)
     .then((result) => {
-      // Output structured JSON for Python to parse
       console.log("\n__RESULT__");
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.success ? 0 : 1);

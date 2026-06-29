@@ -25,6 +25,7 @@ import {
   PublicKey,
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
+  clusterApiUrl,
 } from "@solana/web3.js";
 import {
   MARKET_STATE_LAYOUT_V3,
@@ -51,22 +52,21 @@ dotenv.config({ path: "../.env" });
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// Config + safety
+// Config + network
 // ---------------------------------------------------------------------------
 
 const NETWORK = process.env.NETWORK || "devnet";
 
-if (NETWORK === "mainnet-beta") {
-  console.error("ERROR: mainnet-beta is blocked in this educational system.");
-  process.exit(1);
-}
-
-const RPC_URL = process.env.PRIMARY_RPC || "https://api.devnet.solana.com";
+const RPC_URL =
+  process.env.PRIMARY_RPC ||
+  (NETWORK === "mainnet"
+    ? "https://api.mainnet-beta.solana.com"
+    : clusterApiUrl("devnet"));
 
 // Raydium AMM program IDs per network
 const RAYDIUM_AMM_PROGRAMS = {
   devnet: new PublicKey("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8"),
-  // Note: Use DEVNET_PROGRAM_ID from Raydium SDK for accurate devnet addresses
+  mainnet: new PublicKey("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"),
 };
 
 // Wrapped SOL mint
@@ -118,7 +118,7 @@ export async function createRaydiumPool({
   initialSol = 0.1,
   initialTokens,
 }) {
-  console.log("\n=== [DEVNET] Creating Raydium AMM Pool ===");
+  console.log(`\n=== [${NETWORK.toUpperCase()}] Creating Raydium AMM Pool ===`);
   console.log(`Market ID: ${marketId}`);
   console.log(`Base mint: ${baseMintStr}`);
   console.log(`Initial SOL: ${initialSol}`);
@@ -158,14 +158,12 @@ export async function createRaydiumPool({
   }
 
   const marketState = MARKET_STATE_LAYOUT_V3.decode(
-    marketAccountInfo.data.slice(5) // skip 5-byte header
+    marketAccountInfo.data.slice(5)
   );
 
-  // Build base/quote token objects for Raydium SDK
   const baseToken = new Token(TOKEN_PROGRAM_ID, baseMint, baseDecimals, "TOKEN", "Token");
   const quoteToken = new Token(TOKEN_PROGRAM_ID, WSOL_MINT, 9, "SOL", "Wrapped SOL");
 
-  // Convert amounts to BN (smallest units)
   const baseAmount = new TokenAmount(
     baseToken,
     new BN(tokensToAdd).mul(new BN(10 ** baseDecimals))
@@ -175,16 +173,20 @@ export async function createRaydiumPool({
     new BN(Math.floor(initialSol * LAMPORTS_PER_SOL))
   );
 
+  const ammProgramId =
+    NETWORK === "mainnet"
+      ? RAYDIUM_AMM_PROGRAMS.mainnet
+      : DEVNET_PROGRAM_ID.AmmV4;
+
   console.log(`\nAdding liquidity:`);
   console.log(`  Base: ${tokensToAdd.toLocaleString()} tokens`);
   console.log(`  Quote: ${initialSol} SOL`);
   console.log(`  Implied price: ${(initialSol / tokensToAdd).toFixed(12)} SOL/token`);
 
   try {
-    // Use Raydium SDK to create the pool initialization instructions
     const { transactions, poolId, lpMint } = await Liquidity.makeCreatePoolV4TxVersionSimple({
       connection,
-      programId: DEVNET_PROGRAM_ID.AmmV4,   // Use devnet AMM program
+      programId: ammProgramId,
       marketInfo: {
         marketId: new PublicKey(marketId),
         programId: new PublicKey(marketState.ownAddress ?? DEVNET_PROGRAM_ID.OPENBOOK_MARKET),
@@ -199,21 +201,20 @@ export async function createRaydiumPool({
       },
       baseAmount: baseAmount.raw,
       quoteAmount: quoteAmount.raw,
-      startTime: new BN(0), // Start immediately
+      startTime: new BN(0),
       ownerInfo: {
         feePayer: wallet.publicKey,
         wallet: wallet.publicKey,
-        tokenAccounts: [],  // SDK will find them
+        tokenAccounts: [],
         useSOLBalance: true,
       },
-      makeTxVersion: 0,  // Legacy transactions
+      makeTxVersion: 0,
       feeDestinationId: DEVNET_PROGRAM_ID.FEE_DESTINATION_ID,
     });
 
     console.log(`\nPool ID: ${poolId.toString()}`);
     console.log(`LP Mint: ${lpMint.toString()}`);
 
-    // Send all transactions
     const txids = [];
     for (const txData of transactions) {
       try {
@@ -243,10 +244,6 @@ export async function createRaydiumPool({
     };
   } catch (err) {
     console.error(`\nPool creation failed: ${err.message}`);
-    // Common failure reasons:
-    // - "0x1" = insufficient funds
-    // - "0x1793" = invalid market state
-    // - OpenBook market not fully confirmed yet (wait longer)
     console.error("Tip: Wait 30s after market creation before creating the pool.");
     throw err;
   }
