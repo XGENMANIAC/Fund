@@ -1,22 +1,14 @@
 /**
  * Raydium AMM v4 Pool Creation
  *
- * DISCLAIMER: This script is part of an educational system for Solana devnet only.
- * Use exclusively on Solana devnet/testnet.
+ * DISCLAIMER: This script is part of an educational system.
  * Do NOT use on mainnet without full legal and compliance review.
  *
  * Prerequisites:
  *   1. An OpenBook market for the base/quote pair (see create_market.js)
  *   2. The deployer wallet holds both base tokens and WSOL
- *   3. Sufficient SOL for transaction fees and pool rent (~0.3 SOL)
- *
- * What this script does:
- *   1. Initialize a Raydium AMM pool for the base/quote pair
- *   2. Add initial liquidity (initial SOL + tokens from deployer wallet)
- *   3. Return pool ID and LP token information
- *
- * The LP tokens represent the deployer's share of the pool.
- * In a fair-launch, the LP tokens are typically burned or locked.
+ *   3. Sufficient SOL for transaction fees and pool rent (~0.3 SOL on devnet,
+ *      ~2–3 SOL on mainnet)
  */
 
 import {
@@ -32,14 +24,10 @@ import {
   Liquidity,
   TokenAmount,
   Token,
-  Percent,
-  DEVNET_PROGRAM_ID,
-  Currency,
 } from "@raydium-io/raydium-sdk-v2";
 import {
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
 } from "@solana/spl-token";
 import BN from "bn.js";
 import fs from "fs";
@@ -52,7 +40,7 @@ dotenv.config({ path: "../.env" });
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// Config + network
+// Network + RPC
 // ---------------------------------------------------------------------------
 
 const NETWORK = process.env.NETWORK || "devnet";
@@ -63,13 +51,27 @@ const RPC_URL =
     ? "https://api.mainnet-beta.solana.com"
     : clusterApiUrl("devnet"));
 
-// Raydium AMM program IDs per network
-const RAYDIUM_AMM_PROGRAMS = {
-  devnet: new PublicKey("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8"),
-  mainnet: new PublicKey("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"),
+// ---------------------------------------------------------------------------
+// Network-specific program IDs
+// All addresses are canonical on-chain values — do not change without
+// verifying against the Raydium and OpenBook documentation.
+// ---------------------------------------------------------------------------
+const PROGRAM_IDS = {
+  devnet: {
+    ammV4:          new PublicKey("HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8"),
+    feeDestination: new PublicKey("3XMrhbv989VxAMi3DErLV9eJht1pHppW5LbKxe9fkEFR"),
+    openBook:       new PublicKey("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVAPHTKrg56tYvR"),
+  },
+  mainnet: {
+    ammV4:          new PublicKey("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"),
+    feeDestination: new PublicKey("7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5"),
+    openBook:       new PublicKey("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX"),
+  },
 };
 
-// Wrapped SOL mint
+const PROGRAM_ID = PROGRAM_IDS[NETWORK] || PROGRAM_IDS.devnet;
+
+// Wrapped SOL mint (same on all networks)
 const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 
 // ---------------------------------------------------------------------------
@@ -101,14 +103,14 @@ async function getTokenBalance(connection, owner, mint) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Raydium AMM pool and add initial liquidity.
+ * Create a Raydium AMM v4 pool and add initial liquidity.
  *
  * @param {object} params
- * @param {string} params.marketId - OpenBook market ID (from create_market.js)
- * @param {string} params.baseMint - Base token (meme coin) mint address
- * @param {number} params.baseDecimals - Base token decimals (usually 6)
- * @param {number} params.initialSol - Initial SOL to add as quote liquidity
- * @param {number} params.initialTokens - Initial token amount to add as base liquidity
+ * @param {string} params.marketId       - OpenBook market ID (from create_market.js)
+ * @param {string} params.baseMint       - Base token (meme coin) mint address
+ * @param {number} params.baseDecimals   - Base token decimals (usually 6)
+ * @param {number} params.initialSol     - Initial SOL to add as quote liquidity
+ * @param {number} params.initialTokens  - Initial token amount to add as base liquidity
  * @returns {Promise<{poolId: string, lpMint: string, txids: string[]}>}
  */
 export async function createRaydiumPool({
@@ -119,9 +121,12 @@ export async function createRaydiumPool({
   initialTokens,
 }) {
   console.log(`\n=== [${NETWORK.toUpperCase()}] Creating Raydium AMM Pool ===`);
-  console.log(`Market ID: ${marketId}`);
-  console.log(`Base mint: ${baseMintStr}`);
-  console.log(`Initial SOL: ${initialSol}`);
+  console.log(`Market ID:     ${marketId}`);
+  console.log(`Base mint:     ${baseMintStr}`);
+  console.log(`AMM program:   ${PROGRAM_ID.ammV4.toString()}`);
+  console.log(`OpenBook prog: ${PROGRAM_ID.openBook.toString()}`);
+  console.log(`Fee dest:      ${PROGRAM_ID.feeDestination.toString()}`);
+  console.log(`Initial SOL:   ${initialSol}`);
   console.log(`Initial tokens: ${initialTokens?.toLocaleString() ?? "auto"}`);
 
   const connection = new Connection(RPC_URL, "confirmed");
@@ -134,7 +139,9 @@ export async function createRaydiumPool({
 
   if (solBalance < (initialSol + 0.3) * LAMPORTS_PER_SOL) {
     throw new Error(
-      `Insufficient SOL. Need ${initialSol + 0.3} SOL, have ${solBalance / LAMPORTS_PER_SOL}`
+      `Insufficient SOL. Need ${initialSol + 0.3} SOL, have ${
+        solBalance / LAMPORTS_PER_SOL
+      }`
     );
   }
 
@@ -150,17 +157,16 @@ export async function createRaydiumPool({
     );
   }
 
-  // Fetch market info
+  // Fetch market info (to decode the market state)
   console.log("\nFetching market info...");
   const marketAccountInfo = await connection.getAccountInfo(new PublicKey(marketId));
   if (!marketAccountInfo) {
     throw new Error(`Market account not found: ${marketId}`);
   }
 
-  const marketState = MARKET_STATE_LAYOUT_V3.decode(
-    marketAccountInfo.data.slice(5)
-  );
+  MARKET_STATE_LAYOUT_V3.decode(marketAccountInfo.data.slice(5));
 
+  // Build SDK token objects
   const baseToken = new Token(TOKEN_PROGRAM_ID, baseMint, baseDecimals, "TOKEN", "Token");
   const quoteToken = new Token(TOKEN_PROGRAM_ID, WSOL_MINT, 9, "SOL", "Wrapped SOL");
 
@@ -173,44 +179,42 @@ export async function createRaydiumPool({
     new BN(Math.floor(initialSol * LAMPORTS_PER_SOL))
   );
 
-  const ammProgramId =
-    NETWORK === "mainnet"
-      ? RAYDIUM_AMM_PROGRAMS.mainnet
-      : DEVNET_PROGRAM_ID.AmmV4;
-
   console.log(`\nAdding liquidity:`);
-  console.log(`  Base: ${tokensToAdd.toLocaleString()} tokens`);
+  console.log(`  Base:  ${tokensToAdd.toLocaleString()} tokens`);
   console.log(`  Quote: ${initialSol} SOL`);
-  console.log(`  Implied price: ${(initialSol / tokensToAdd).toFixed(12)} SOL/token`);
+  console.log(
+    `  Implied price: ${(initialSol / tokensToAdd).toFixed(12)} SOL/token`
+  );
 
   try {
-    const { transactions, poolId, lpMint } = await Liquidity.makeCreatePoolV4TxVersionSimple({
-      connection,
-      programId: ammProgramId,
-      marketInfo: {
-        marketId: new PublicKey(marketId),
-        programId: new PublicKey(marketState.ownAddress ?? DEVNET_PROGRAM_ID.OPENBOOK_MARKET),
-      },
-      baseMintInfo: {
-        mint: baseMint,
-        decimals: baseDecimals,
-      },
-      quoteMintInfo: {
-        mint: WSOL_MINT,
-        decimals: 9,
-      },
-      baseAmount: baseAmount.raw,
-      quoteAmount: quoteAmount.raw,
-      startTime: new BN(0),
-      ownerInfo: {
-        feePayer: wallet.publicKey,
-        wallet: wallet.publicKey,
-        tokenAccounts: [],
-        useSOLBalance: true,
-      },
-      makeTxVersion: 0,
-      feeDestinationId: DEVNET_PROGRAM_ID.FEE_DESTINATION_ID,
-    });
+    const { transactions, poolId, lpMint } =
+      await Liquidity.makeCreatePoolV4TxVersionSimple({
+        connection,
+        programId:  PROGRAM_ID.ammV4,
+        marketInfo: {
+          marketId:  new PublicKey(marketId),
+          programId: PROGRAM_ID.openBook,   // OpenBook DEX program (not the market address)
+        },
+        baseMintInfo: {
+          mint:     baseMint,
+          decimals: baseDecimals,
+        },
+        quoteMintInfo: {
+          mint:     WSOL_MINT,
+          decimals: 9,
+        },
+        baseAmount:  baseAmount.raw,
+        quoteAmount: quoteAmount.raw,
+        startTime:   new BN(0),
+        ownerInfo: {
+          feePayer:      wallet.publicKey,
+          wallet:        wallet.publicKey,
+          tokenAccounts: [],
+          useSOLBalance: true,
+        },
+        makeTxVersion:   0,
+        feeDestinationId: PROGRAM_ID.feeDestination,  // Network-correct fee destination
+      });
 
     console.log(`\nPool ID: ${poolId.toString()}`);
     console.log(`LP Mint: ${lpMint.toString()}`);
@@ -237,11 +241,7 @@ export async function createRaydiumPool({
     console.log(`  LP Mint: ${lpMint.toString()}`);
     console.log(`  Transactions: ${txids.join(", ")}`);
 
-    return {
-      poolId: poolId.toString(),
-      lpMint: lpMint.toString(),
-      txids,
-    };
+    return { poolId: poolId.toString(), lpMint: lpMint.toString(), txids };
   } catch (err) {
     console.error(`\nPool creation failed: ${err.message}`);
     console.error("Tip: Wait 30s after market creation before creating the pool.");
@@ -267,7 +267,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   createRaydiumPool({
     marketId,
     baseMint,
-    initialSol: initialSolArg ? parseFloat(initialSolArg) : 0.1,
+    initialSol:    initialSolArg    ? parseFloat(initialSolArg)  : 0.1,
     initialTokens: initialTokensArg ? parseInt(initialTokensArg) : undefined,
   })
     .then((result) => {
