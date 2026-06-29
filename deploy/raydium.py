@@ -36,6 +36,21 @@ from utils.helpers import load_config
 logger = get_logger(__name__)
 
 
+def get_network_config(network: str = None) -> dict:
+    if network is None:
+        network = os.getenv("NETWORK", "devnet").lower()
+    if network == "mainnet":
+        return {
+            "rpc_url": "https://api.mainnet-beta.solana.com",
+            "raydium_program_id": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+        }
+    else:
+        return {
+            "rpc_url": "https://api.devnet.solana.com",
+            "raydium_program_id": "HWy1jotHpo6UqeQxx49dpYYdQB8wj9Qk9MdxwjLvDHB8",
+        }
+
+
 class RaydiumDeployer:
     """
     Deploys a Raydium AMM pool by delegating to the Node.js SDK scripts.
@@ -47,11 +62,13 @@ class RaydiumDeployer:
 
     def __init__(self):
         cfg = load_config()
-        network = cfg.get("network", "devnet")
-        if network == "mainnet-beta":
-            raise ValueError("MAINNET BLOCKED: devnet only.")
+        network_raw = cfg.get("network", "devnet")
+        if isinstance(network_raw, dict):
+            config_network = network_raw.get("name", "devnet")
+        else:
+            config_network = network_raw
+        self._network = os.getenv("NETWORK", config_network).lower()
 
-        self._network = network
         deploy_cfg = cfg.get("deploy", {})
         self._initial_sol = deploy_cfg.get("initial_sol", 0.1)
         self._js_dir = Path(__file__).parent.parent / "js"
@@ -88,7 +105,7 @@ class RaydiumDeployer:
         }
 
         logger.info(
-            f"[DEVNET] Raydium deploy: {spec.new_name} ({spec.new_symbol}) "
+            f"[{self._network.upper()}] Raydium deploy: {spec.new_name} ({spec.new_symbol}) "
             f"pool_tokens={tokens_in_pool:,} initial_sol={self._initial_sol}"
         )
 
@@ -116,14 +133,12 @@ class RaydiumDeployer:
 
     def _run_node_sync(self, params: dict) -> dict:
         """Synchronous subprocess call — run via run_in_executor."""
-        # Check Node.js is available
         if not self._check_node():
             return {
                 "success": False,
                 "error": "Node.js not found. Install Node.js 18+ to run Raydium deployment.",
             }
 
-        # Check npm dependencies
         node_modules = self._js_dir / "node_modules"
         if not node_modules.exists():
             logger.error("Node.js dependencies not installed. Run: cd js && npm install")
@@ -157,10 +172,9 @@ class RaydiumDeployer:
                 text=True,
                 cwd=str(self._js_dir),
                 env=env,
-                timeout=300,  # 5 minutes max
+                timeout=300,
             )
 
-            # Log Node.js output for debugging
             if proc.stdout:
                 for line in proc.stdout.splitlines():
                     logger.debug(f"[node] {line}")
@@ -168,7 +182,6 @@ class RaydiumDeployer:
                 for line in proc.stderr.splitlines():
                     logger.warning(f"[node-err] {line}")
 
-            # Extract the structured JSON result
             result = self._parse_node_result(proc.stdout)
 
             if proc.returncode != 0 and not result.get("success"):
@@ -217,5 +230,5 @@ class RaydiumDeployer:
             return False
 
     def _get_rpc_url(self) -> str:
-        cfg = load_config()
-        return cfg.get("rpc", {}).get("endpoints", ["https://api.devnet.solana.com"])[0]
+        net_cfg = get_network_config(self._network)
+        return net_cfg["rpc_url"]

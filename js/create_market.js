@@ -13,8 +13,6 @@
  *   2. Create request queue, event queue, bids, asks accounts
  *   3. Call initializeMarket instruction on the OpenBook DEX program
  *
- * On devnet, the OpenBook program ID is different from mainnet.
- *
  * Resources:
  *   - OpenBook GitHub: https://github.com/openbook-dex/openbook-v2
  *   - Raydium docs: https://docs.raydium.io
@@ -28,6 +26,7 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
+  clusterApiUrl,
 } from "@solana/web3.js";
 import {
   MarketV2,
@@ -48,17 +47,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const NETWORK = process.env.NETWORK || "devnet";
 
-if (NETWORK === "mainnet-beta") {
-  console.error("ERROR: mainnet-beta is blocked in this educational system.");
-  process.exit(1);
-}
+const RPC_URL =
+  process.env.PRIMARY_RPC ||
+  (NETWORK === "mainnet"
+    ? "https://api.mainnet-beta.solana.com"
+    : clusterApiUrl("devnet"));
 
-const RPC_URL = process.env.PRIMARY_RPC || "https://api.devnet.solana.com";
-
-// OpenBook program IDs
+// OpenBook program IDs per network
 const OPENBOOK_PROGRAM_IDS = {
   devnet: new PublicKey("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVAPHTKrg56tYvR"),
-  "testnet": new PublicKey("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVAPHTKrg56tYvR"),
+  testnet: new PublicKey("EoTcMgcDRTJVZDMZWBoU6rhYHZfkNTVAPHTKrg56tYvR"),
+  mainnet: new PublicKey("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX"),
 };
 
 // ---------------------------------------------------------------------------
@@ -90,54 +89,49 @@ function loadWallet() {
  */
 export async function createOpenBookMarket({
   baseMint,
-  quoteMint = new PublicKey("So11111111111111111111111111111111111111112"), // Wrapped SOL
+  quoteMint = new PublicKey("So11111111111111111111111111111111111111112"),
   lotSize = 1,
   tickSize = 0.000001,
 }) {
-  console.log("\n=== [DEVNET] Creating OpenBook Market ===");
+  console.log(`\n=== [${NETWORK.toUpperCase()}] Creating OpenBook Market ===`);
   console.log(`Base mint: ${baseMint.toString()}`);
   console.log(`Quote mint: ${quoteMint.toString()}`);
   console.log(`Lot size: ${lotSize} | Tick size: ${tickSize}`);
 
   const connection = new Connection(RPC_URL, "confirmed");
   const wallet = loadWallet();
-  const openBookProgram = OPENBOOK_PROGRAM_IDS[NETWORK];
+  const openBookProgram = OPENBOOK_PROGRAM_IDS[NETWORK] || OPENBOOK_PROGRAM_IDS.devnet;
 
-  // Check wallet balance
   const balance = await connection.getBalance(wallet.publicKey);
   console.log(`Wallet balance: ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
 
   if (balance < 0.5 * LAMPORTS_PER_SOL) {
     throw new Error(
       `Insufficient balance (${balance / LAMPORTS_PER_SOL} SOL). ` +
-        "Need at least 0.5 SOL devnet for market creation. " +
-        "Run: solana airdrop 2 --url devnet"
+        "Need at least 0.5 SOL for market creation."
     );
   }
 
   try {
-    // Use Raydium SDK's MarketV2 helper to create the market
-    // This handles all the account creation and initialization internally
     const { transactions, market } = await MarketV2.makeCreateMarketInstructionSimple({
       connection,
       wallet: wallet.publicKey,
       baseInfo: {
         mint: baseMint,
-        decimals: 6, // standard for Solana meme coins
+        decimals: 6,
       },
       quoteInfo: {
         mint: quoteMint,
-        decimals: 9, // WSOL has 9 decimals
+        decimals: 9,
       },
       lotSize,
       tickSize,
       dexProgramId: openBookProgram,
-      makeTxVersion: 0, // Legacy transaction
+      makeTxVersion: 0,
     });
 
     console.log(`\nNew market ID: ${market.toString()}`);
 
-    // Send all setup transactions
     const txids = [];
     for (const tx of transactions) {
       const txid = await sendAndConfirmTransaction(
@@ -168,7 +162,6 @@ export async function createOpenBookMarket({
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-// When called directly: node create_market.js <baseMint> [quoteMint]
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const baseMintArg = process.argv[2];
   const quoteMintArg = process.argv[3];
@@ -186,7 +179,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       : new PublicKey("So11111111111111111111111111111111111111112"),
   })
     .then((result) => {
-      // Output JSON for the Python caller to parse
       console.log("\n__RESULT__");
       console.log(JSON.stringify(result));
     })

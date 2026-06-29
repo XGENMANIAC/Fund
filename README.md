@@ -222,13 +222,30 @@ See `config.example.yaml` for all available options. Key settings:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `network` | `devnet` | `devnet` or `testnet` — never `mainnet-beta` |
+| `network.name` | `devnet` | `devnet`, `testnet`, or `mainnet` |
 | `monitor.poll_interval` | 60 | Seconds between scrape cycles |
 | `filters.min_liquidity_usd` | 5000 | Minimum $ liquidity to consider |
 | `filters.min_volume_5m` | 500 | Minimum 5-min volume |
 | `filters.min_score` | 60 | Score threshold (0–100) to queue |
 | `deploy.initial_sol` | 0.1 | SOL to seed pool (devnet only) |
 | `deploy.token_supply` | 1_000_000_000 | Total token supply |
+
+---
+
+## Mainnet Deployment (Advanced / High Risk)
+
+1. Set `NETWORK=mainnet` in `.env`
+2. Use a dedicated mainnet wallet with small amounts
+3. Run with manual approval:
+   ```bash
+   python -m bot.main --mode full --network mainnet
+   ```
+4. You will be prompted to type `YES_MAINNET` to confirm each deployment
+5. Monitor transactions on [Solscan](https://solscan.io)
+
+> **Warning:** Mainnet deployments use real SOL. Mistakes cannot be undone.
+> Start with the smallest possible amounts and verify each step on Solscan
+> before proceeding.
 
 ---
 

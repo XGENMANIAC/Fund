@@ -31,20 +31,20 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+NETWORK = os.getenv("NETWORK", "devnet").lower()
+
 # ---------------------------------------------------------------------------
-# Default free public RPC endpoints (devnet + mainnet fallbacks for monitoring)
+# Default free public RPC endpoints
 # ---------------------------------------------------------------------------
 DEVNET_ENDPOINTS = [
     "https://api.devnet.solana.com",
-    "https://devnet.helius-rpc.com",  # free tier, no key needed for public methods
+    "https://devnet.helius-rpc.com",
 ]
 
 MAINNET_ENDPOINTS = [
-    # For MONITORING ONLY — reading public on-chain data
-    # Do NOT send transactions to mainnet from this educational system
     "https://api.mainnet-beta.solana.com",
-    "https://solana-mainnet.g.alchemy.com/v2/demo",  # Alchemy demo key (limited)
-    "https://rpc.ankr.com/solana",                    # Ankr free tier
+    "https://solana-mainnet.g.alchemy.com/v2/demo",
+    "https://rpc.ankr.com/solana",
 ]
 
 
@@ -67,7 +67,12 @@ class SolanaRPCClient:
             token_info = await client.get_account_info(address)
     """
 
-    def __init__(self, network: str = "devnet", endpoints: list[str] | None = None):
+    def __init__(self, network: str = None, endpoints: list[str] | None = None):
+        if network is None:
+            network = os.getenv("NETWORK", "devnet").lower()
+        # Normalize "mainnet" shorthand to the canonical Solana network name
+        if network == "mainnet":
+            network = "mainnet-beta"
         if network not in ("devnet", "testnet", "mainnet-beta"):
             raise ValueError(f"Unknown network: {network}")
 
@@ -299,7 +304,7 @@ async def subscribe_program_logs(
             async with websockets.connect(ws_url, ping_interval=20) as ws:
                 await ws.send(json.dumps(subscribe_msg))
                 logger.info(f"Subscribed to logs for program {program_id}")
-                retry_delay = 1  # reset on successful connect
+                retry_delay = 1
 
                 async for raw in ws:
                     try:
@@ -314,7 +319,7 @@ async def subscribe_program_logs(
                 f"WebSocket error ({exc}), reconnecting in {retry_delay}s..."
             )
             await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)  # cap at 60s
+            retry_delay = min(retry_delay * 2, 60)
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +332,9 @@ class SyncRPCClient:
     Creates a private event loop internally.
     """
 
-    def __init__(self, network: str = "devnet"):
+    def __init__(self, network: str = None):
+        if network is None:
+            network = os.getenv("NETWORK", "devnet").lower()
         self.network = network
         self._loop = asyncio.new_event_loop()
 
