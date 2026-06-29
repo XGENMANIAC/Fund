@@ -62,7 +62,7 @@ pytz==2024.1                    # Timezone handling
 # ---------------------------------------------------------------------------
 # Metadata / IPFS (free tiers)
 # ---------------------------------------------------------------------------
-py-ipfs-http-client==0.8.0a2   # IPFS HTTP client (optional, for local IPFS node)
+# py-ipfs-http-client==0.8.0a2   # IPFS HTTP client (unavailable on PyPI, skip)
 Pillow==10.3.0                  # Image handling for token icon generation
 
 # ---------------------------------------------------------------------------
