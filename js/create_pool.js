@@ -69,10 +69,28 @@ const PROGRAM_ID = PROGRAM_IDS[NETWORK] || PROGRAM_IDS.devnet;
 const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 
 // ---------------------------------------------------------------------------
-// Wallet loader — supports WALLET_KEYPAIR_JSON env var (base64 or raw JSON)
-// preferred for cloud deployments so the private key never touches disk.
+// Wallet loader — three sources in priority order:
+//   1. WALLET_PRIVATE_KEY  — base58 string exported from Solflare / Phantom
+//   2. WALLET_KEYPAIR_JSON — base64-encoded JSON byte array (Railway / cloud)
+//   3. WALLET_KEYPAIR_PATH — local .json keypair file
 // ---------------------------------------------------------------------------
+import bs58 from "bs58";
+
 function loadWallet() {
+  // 1. Solflare / Phantom base58 private key
+  const b58Key = process.env.WALLET_PRIVATE_KEY;
+  if (b58Key) {
+    const raw = bs58.decode(b58Key.trim());
+    if (raw.length !== 64 && raw.length !== 32) {
+      throw new Error(
+        `WALLET_PRIVATE_KEY decoded to ${raw.length} bytes — expected 64 (full keypair) or 32 (seed). ` +
+        "Copy the full Private Key from Solflare → Settings → Security → Export Private Key."
+      );
+    }
+    return Keypair.fromSecretKey(raw.length === 64 ? raw : Keypair.fromSeed(raw).secretKey);
+  }
+
+  // 2. Base64-encoded JSON array (cloud/Railway)
   const keypairJsonEnv = process.env.WALLET_KEYPAIR_JSON;
   if (keypairJsonEnv) {
     try {
@@ -82,6 +100,8 @@ function loadWallet() {
       return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(keypairJsonEnv)));
     }
   }
+
+  // 3. Local keypair file
   const keypairPath = (
     process.env.WALLET_KEYPAIR_PATH ||
     path.join(process.env.HOME || "~", ".config/solana/mainnet.json")
