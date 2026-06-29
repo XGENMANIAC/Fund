@@ -1,14 +1,11 @@
 /**
  * Raydium AMM v4 Pool Creation
  *
- * DISCLAIMER: This script is part of an educational system.
- * Do NOT use on mainnet without full legal and compliance review.
+ * DISCLAIMER: Do NOT use on mainnet without full legal and compliance review.
  *
  * Prerequisites:
- *   1. An OpenBook market for the base/quote pair (see create_market.js)
- *   2. The deployer wallet holds both base tokens and WSOL
- *   3. Sufficient SOL for transaction fees and pool rent (~0.3 SOL on devnet,
- *      ~2–3 SOL on mainnet)
+ *   1. An OpenBook market (see create_market.js)
+ *   2. Wallet holds base tokens + enough SOL (~0.3 SOL devnet, ~2-3 SOL mainnet)
  */
 
 import {
@@ -53,8 +50,6 @@ const RPC_URL =
 
 // ---------------------------------------------------------------------------
 // Network-specific program IDs
-// All addresses are canonical on-chain values — do not change without
-// verifying against the Raydium and OpenBook documentation.
 // ---------------------------------------------------------------------------
 const PROGRAM_IDS = {
   devnet: {
@@ -71,22 +66,34 @@ const PROGRAM_IDS = {
 
 const PROGRAM_ID = PROGRAM_IDS[NETWORK] || PROGRAM_IDS.devnet;
 
-// Wrapped SOL mint (same on all networks)
 const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+
+// ---------------------------------------------------------------------------
+// Wallet loader — supports WALLET_KEYPAIR_JSON env var (base64 or raw JSON)
+// preferred for cloud deployments so the private key never touches disk.
+// ---------------------------------------------------------------------------
+function loadWallet() {
+  const keypairJsonEnv = process.env.WALLET_KEYPAIR_JSON;
+  if (keypairJsonEnv) {
+    try {
+      const decoded = Buffer.from(keypairJsonEnv, "base64").toString("utf-8");
+      return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(decoded)));
+    } catch {
+      return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(keypairJsonEnv)));
+    }
+  }
+  const keypairPath = (
+    process.env.WALLET_KEYPAIR_PATH ||
+    path.join(process.env.HOME || "~", ".config/solana/mainnet.json")
+  ).replace("~", process.env.HOME || "");
+  return Keypair.fromSecretKey(
+    Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, "utf-8")))
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function loadWallet() {
-  const keypairPath = (
-    process.env.WALLET_KEYPAIR_PATH ||
-    path.join(process.env.HOME || "~", ".config/solana/devnet-test.json")
-  ).replace("~", process.env.HOME || "");
-
-  const keyData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
-  return Keypair.fromSecretKey(Uint8Array.from(keyData));
-}
 
 async function getTokenBalance(connection, owner, mint) {
   const ata = await getAssociatedTokenAddress(mint, owner);
@@ -99,20 +106,9 @@ async function getTokenBalance(connection, owner, mint) {
 }
 
 // ---------------------------------------------------------------------------
-// Main pool creation function
+// Main pool creation
 // ---------------------------------------------------------------------------
 
-/**
- * Create a Raydium AMM v4 pool and add initial liquidity.
- *
- * @param {object} params
- * @param {string} params.marketId       - OpenBook market ID (from create_market.js)
- * @param {string} params.baseMint       - Base token (meme coin) mint address
- * @param {number} params.baseDecimals   - Base token decimals (usually 6)
- * @param {number} params.initialSol     - Initial SOL to add as quote liquidity
- * @param {number} params.initialTokens  - Initial token amount to add as base liquidity
- * @returns {Promise<{poolId: string, lpMint: string, txids: string[]}>}
- */
 export async function createRaydiumPool({
   marketId,
   baseMint: baseMintStr,
@@ -127,155 +123,105 @@ export async function createRaydiumPool({
   console.log(`OpenBook prog: ${PROGRAM_ID.openBook.toString()}`);
   console.log(`Fee dest:      ${PROGRAM_ID.feeDestination.toString()}`);
   console.log(`Initial SOL:   ${initialSol}`);
-  console.log(`Initial tokens: ${initialTokens?.toLocaleString() ?? "auto"}`);
 
   const connection = new Connection(RPC_URL, "confirmed");
   const wallet = loadWallet();
   const baseMint = new PublicKey(baseMintStr);
 
-  // Check SOL balance
   const solBalance = await connection.getBalance(wallet.publicKey);
   console.log(`\nWallet SOL: ${(solBalance / LAMPORTS_PER_SOL).toFixed(4)}`);
 
   if (solBalance < (initialSol + 0.3) * LAMPORTS_PER_SOL) {
     throw new Error(
-      `Insufficient SOL. Need ${initialSol + 0.3} SOL, have ${
-        solBalance / LAMPORTS_PER_SOL
-      }`
+      `Insufficient SOL. Need ${initialSol + 0.3}, have ${solBalance / LAMPORTS_PER_SOL}`
     );
   }
 
-  // Check token balance
   const tokenBalance = await getTokenBalance(connection, wallet.publicKey, baseMint);
   const tokenBalanceReadable = Number(tokenBalance) / 10 ** baseDecimals;
-  console.log(`Wallet token balance: ${tokenBalanceReadable.toLocaleString()}`);
-
   const tokensToAdd = initialTokens ?? Math.floor(tokenBalanceReadable * 0.8);
+
   if (tokenBalanceReadable < tokensToAdd) {
-    throw new Error(
-      `Insufficient token balance. Need ${tokensToAdd}, have ${tokenBalanceReadable}`
-    );
+    throw new Error(`Insufficient tokens. Need ${tokensToAdd}, have ${tokenBalanceReadable}`);
   }
 
-  // Fetch market info (to decode the market state)
-  console.log("\nFetching market info...");
+  console.log(`\nFetching market info...`);
   const marketAccountInfo = await connection.getAccountInfo(new PublicKey(marketId));
-  if (!marketAccountInfo) {
-    throw new Error(`Market account not found: ${marketId}`);
-  }
+  if (!marketAccountInfo) throw new Error(`Market account not found: ${marketId}`);
 
   MARKET_STATE_LAYOUT_V3.decode(marketAccountInfo.data.slice(5));
 
-  // Build SDK token objects
-  const baseToken = new Token(TOKEN_PROGRAM_ID, baseMint, baseDecimals, "TOKEN", "Token");
+  const baseToken  = new Token(TOKEN_PROGRAM_ID, baseMint, baseDecimals, "TOKEN", "Token");
   const quoteToken = new Token(TOKEN_PROGRAM_ID, WSOL_MINT, 9, "SOL", "Wrapped SOL");
 
-  const baseAmount = new TokenAmount(
-    baseToken,
-    new BN(tokensToAdd).mul(new BN(10 ** baseDecimals))
-  );
-  const quoteAmount = new TokenAmount(
-    quoteToken,
-    new BN(Math.floor(initialSol * LAMPORTS_PER_SOL))
-  );
+  const baseAmount  = new TokenAmount(baseToken,  new BN(tokensToAdd).mul(new BN(10 ** baseDecimals)));
+  const quoteAmount = new TokenAmount(quoteToken, new BN(Math.floor(initialSol * LAMPORTS_PER_SOL)));
 
   console.log(`\nAdding liquidity:`);
   console.log(`  Base:  ${tokensToAdd.toLocaleString()} tokens`);
   console.log(`  Quote: ${initialSol} SOL`);
-  console.log(
-    `  Implied price: ${(initialSol / tokensToAdd).toFixed(12)} SOL/token`
-  );
 
   try {
     const { transactions, poolId, lpMint } =
       await Liquidity.makeCreatePoolV4TxVersionSimple({
         connection,
-        programId:  PROGRAM_ID.ammV4,
+        programId:         PROGRAM_ID.ammV4,
         marketInfo: {
           marketId:  new PublicKey(marketId),
-          programId: PROGRAM_ID.openBook,   // OpenBook DEX program (not the market address)
+          programId: PROGRAM_ID.openBook,
         },
-        baseMintInfo: {
-          mint:     baseMint,
-          decimals: baseDecimals,
-        },
-        quoteMintInfo: {
-          mint:     WSOL_MINT,
-          decimals: 9,
-        },
-        baseAmount:  baseAmount.raw,
-        quoteAmount: quoteAmount.raw,
-        startTime:   new BN(0),
+        baseMintInfo:  { mint: baseMint,  decimals: baseDecimals },
+        quoteMintInfo: { mint: WSOL_MINT, decimals: 9 },
+        baseAmount:   baseAmount.raw,
+        quoteAmount:  quoteAmount.raw,
+        startTime:    new BN(0),
         ownerInfo: {
           feePayer:      wallet.publicKey,
           wallet:        wallet.publicKey,
           tokenAccounts: [],
           useSOLBalance: true,
         },
-        makeTxVersion:   0,
-        feeDestinationId: PROGRAM_ID.feeDestination,  // Network-correct fee destination
+        makeTxVersion:    0,
+        feeDestinationId: PROGRAM_ID.feeDestination,
       });
-
-    console.log(`\nPool ID: ${poolId.toString()}`);
-    console.log(`LP Mint: ${lpMint.toString()}`);
 
     const txids = [];
     for (const txData of transactions) {
-      try {
-        const txid = await sendAndConfirmTransaction(
-          connection,
-          txData.transaction,
-          [wallet, ...txData.signers],
-          { commitment: "confirmed", maxRetries: 5 }
-        );
-        txids.push(txid);
-        console.log(`Pool init tx: ${txid}`);
-      } catch (err) {
-        console.error(`Transaction failed: ${err.message}`);
-        throw err;
-      }
+      const txid = await sendAndConfirmTransaction(
+        connection, txData.transaction,
+        [wallet, ...txData.signers],
+        { commitment: "confirmed", maxRetries: 5 }
+      );
+      txids.push(txid);
+      console.log(`Pool tx: ${txid}`);
     }
 
-    console.log(`\n✓ Raydium pool created successfully!`);
-    console.log(`  Pool ID: ${poolId.toString()}`);
-    console.log(`  LP Mint: ${lpMint.toString()}`);
-    console.log(`  Transactions: ${txids.join(", ")}`);
-
+    console.log(`\n✓ Pool created: ${poolId.toString()}`);
     return { poolId: poolId.toString(), lpMint: lpMint.toString(), txids };
+
   } catch (err) {
-    console.error(`\nPool creation failed: ${err.message}`);
-    console.error("Tip: Wait 30s after market creation before creating the pool.");
+    console.error(`Pool creation failed: ${err.message}`);
+    console.error("Tip: wait 30s after market creation before creating the pool.");
     throw err;
   }
 }
 
 // ---------------------------------------------------------------------------
-// CLI entry point
+// CLI
 // ---------------------------------------------------------------------------
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.length < 2) {
-    console.error(
-      "Usage: node create_pool.js <marketId> <baseMint> [initialSol] [initialTokens]"
-    );
+  const [,, marketId, baseMint, initialSolArg, initialTokensArg] = process.argv;
+  if (!marketId || !baseMint) {
+    console.error("Usage: node create_pool.js <marketId> <baseMint> [initialSol] [initialTokens]");
     process.exit(1);
   }
-
-  const [marketId, baseMint, initialSolArg, initialTokensArg] = args;
-
   createRaydiumPool({
     marketId,
     baseMint,
     initialSol:    initialSolArg    ? parseFloat(initialSolArg)  : 0.1,
     initialTokens: initialTokensArg ? parseInt(initialTokensArg) : undefined,
   })
-    .then((result) => {
-      console.log("\n__RESULT__");
-      console.log(JSON.stringify(result));
-    })
-    .catch((err) => {
-      console.error("FAILED:", err.message);
-      process.exit(1);
-    });
+    .then(r  => { console.log("\n__RESULT__"); console.log(JSON.stringify(r)); })
+    .catch(e => { console.error("FAILED:", e.message); process.exit(1); });
 }

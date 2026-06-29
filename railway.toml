@@ -1,0 +1,20 @@
+# Railway deployment configuration
+# Docs: https://docs.railway.app/reference/config-as-code
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Monitor-only by default — safe, no deployments.
+# Change to: python -m bot.main --mode full --network mainnet
+# to enable live pool creation.
+startCommand = "python -m bot.main --mode monitor-only --network mainnet"
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 3
+
+# Required environment variables (set in Railway dashboard):
+#   NETWORK=mainnet
+#   WALLET_KEYPAIR_JSON=<base64-encoded keypair>
+#   PRIMARY_RPC=<your Helius/QuickNode RPC URL>
+#   REQUIRE_APPROVAL=1
