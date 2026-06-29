@@ -14,7 +14,7 @@
   "keywords": ["solana", "raydium"],
   "license": "MIT",
   "dependencies": {
-    "@raydium-io/raydium-sdk-v2": "0.1.95",
+    "@raydium-io/raydium-sdk-v2": "0.1.95-alpha",
     "@solana/web3.js": "1.95.3",
     "@solana/spl-token": "0.4.8",
     "@openbook-dex/openbook-v2": "0.0.7",
