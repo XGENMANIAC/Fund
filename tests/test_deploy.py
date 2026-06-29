@@ -40,16 +40,16 @@ class TestRaydiumDeployer:
         )
         return spec
 
-    def test_mainnet_blocked(self):
-        """RaydiumDeployer should raise if network is mainnet-beta."""
+    def test_mainnet_allowed(self):
+        """RaydiumDeployer should accept mainnet config without raising."""
         with patch("deploy.raydium.load_config") as mock_cfg:
             mock_cfg.return_value = {
-                "network": "mainnet-beta",
+                "network": {"name": "mainnet"},
                 "rpc": {"endpoints": []},
                 "deploy": {},
             }
-            with pytest.raises(ValueError, match="MAINNET BLOCKED"):
-                RaydiumDeployer()
+            deployer = RaydiumDeployer()
+            assert deployer._network == "mainnet"
 
     def test_parse_node_result_success(self):
         """_parse_node_result should extract JSON after __RESULT__ marker."""

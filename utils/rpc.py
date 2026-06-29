@@ -1,12 +1,12 @@
 """
 Solana RPC client with automatic fallback and rate-limit handling.
 
-DISCLAIMER: This module is part of an educational system for Solana devnet only.
+DISCLAIMER: This module is part of an educational system.
 Do not use on mainnet without proper rate-limit agreements and compliance review.
 
 Design notes:
 - Cycles through a list of public RPC endpoints on failure or 429.
-- Uses exponential backoff (tenacity) for transient errors.
+- Uses exponential backoff for transient errors.
 - All calls include the commitment level ("confirmed" by default).
 - WebSocket subscriptions for real-time log monitoring.
 """
@@ -14,7 +14,6 @@ Design notes:
 import asyncio
 import json
 import os
-import random
 import time
 from typing import Any, Callable, Optional
 
@@ -31,20 +30,21 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+NETWORK = os.getenv("NETWORK", "devnet").lower()
+
 # ---------------------------------------------------------------------------
-# Default free public RPC endpoints (devnet + mainnet fallbacks for monitoring)
+# Default RPC endpoints
+# For mainnet, use a private RPC (Helius, QuickNode, Triton) in production.
+# Public endpoints are rate-limited and unsuitable for high-frequency polling.
 # ---------------------------------------------------------------------------
 DEVNET_ENDPOINTS = [
     "https://api.devnet.solana.com",
-    "https://devnet.helius-rpc.com",  # free tier, no key needed for public methods
+    "https://devnet.helius-rpc.com",
 ]
 
 MAINNET_ENDPOINTS = [
-    # For MONITORING ONLY — reading public on-chain data
-    # Do NOT send transactions to mainnet from this educational system
     "https://api.mainnet-beta.solana.com",
-    "https://solana-mainnet.g.alchemy.com/v2/demo",  # Alchemy demo key (limited)
-    "https://rpc.ankr.com/solana",                    # Ankr free tier
+    "https://rpc.ankr.com/solana",
 ]
 
 
@@ -67,7 +67,12 @@ class SolanaRPCClient:
             token_info = await client.get_account_info(address)
     """
 
-    def __init__(self, network: str = "devnet", endpoints: list[str] | None = None):
+    def __init__(self, network: str = None, endpoints: list[str] | None = None):
+        if network is None:
+            network = os.getenv("NETWORK", "devnet").lower()
+        # Normalize "mainnet" shorthand to the canonical Solana network name
+        if network == "mainnet":
+            network = "mainnet-beta"
         if network not in ("devnet", "testnet", "mainnet-beta"):
             raise ValueError(f"Unknown network: {network}")
 
@@ -104,9 +109,7 @@ class SolanaRPCClient:
     def _rotate_endpoint(self):
         """Advance to the next endpoint in the rotation list."""
         self._endpoint_idx += 1
-        logger.warning(
-            f"Rotating to RPC endpoint: {self.current_endpoint}"
-        )
+        logger.warning(f"Rotating to RPC endpoint: {self.current_endpoint}")
 
     async def _raw_request(self, method: str, params: list) -> Any:
         """
@@ -159,14 +162,8 @@ class SolanaRPCClient:
         return await self._raw_request("getSlot", [{"commitment": "confirmed"}])
 
     async def get_account_info(self, address: str, encoding: str = "jsonParsed") -> dict | None:
-        """
-        Fetch account info for a given public key address.
-        Returns None if the account does not exist.
-        """
-        params = [
-            address,
-            {"encoding": encoding, "commitment": "confirmed"},
-        ]
+        """Fetch account info for a given public key. Returns None if not found."""
+        params = [address, {"encoding": encoding, "commitment": "confirmed"}]
         return await self._raw_request("getAccountInfo", params)
 
     async def get_token_supply(self, mint_address: str) -> dict:
@@ -183,27 +180,15 @@ class SolanaRPCClient:
         )
         return result.get("value", []) if result else []
 
-    async def get_signatures_for_address(
-        self,
-        address: str,
-        limit: int = 10,
-    ) -> list[dict]:
+    async def get_signatures_for_address(self, address: str, limit: int = 10) -> list[dict]:
         """Return recent transaction signatures for a given address."""
-        params = [
-            address,
-            {"limit": limit, "commitment": "confirmed"},
-        ]
+        params = [address, {"limit": limit, "commitment": "confirmed"}]
         return await self._raw_request("getSignaturesForAddress", params) or []
 
     async def get_program_accounts(
-        self,
-        program_id: str,
-        filters: list | None = None,
+        self, program_id: str, filters: list | None = None
     ) -> list[dict]:
-        """
-        Fetch all accounts owned by a program — useful for finding all pools.
-        Warning: This can be very expensive on public RPCs; use sparingly.
-        """
+        """Fetch all accounts owned by a program. Expensive on public RPCs."""
         params: list = [program_id, {"encoding": "jsonParsed", "commitment": "confirmed"}]
         if filters:
             params[1]["filters"] = filters
@@ -223,20 +208,14 @@ class SolanaRPCClient:
         return (lamports or 0) / 1e9
 
     async def send_transaction(self, encoded_tx: str) -> str:
-        """
-        Broadcast a base64-encoded signed transaction.
-        Returns the transaction signature string.
-        """
+        """Broadcast a base64-encoded signed transaction. Returns the signature."""
         return await self._raw_request(
             "sendTransaction",
             [encoded_tx, {"encoding": "base64", "preflightCommitment": "confirmed"}],
         )
 
     async def confirm_transaction(self, signature: str, timeout: int = 60) -> bool:
-        """
-        Poll until a transaction is confirmed or timeout is reached.
-        Returns True if confirmed, False if timeout or failed.
-        """
+        """Poll until a transaction is confirmed or timeout is reached."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             result = await self._raw_request(
@@ -271,16 +250,10 @@ async def subscribe_program_logs(
     """
     Subscribe to program log events via WebSocket.
 
-    This is how the on-chain monitor detects new Raydium pool creation events
-    without polling. Each new log mentioning 'initialize' is passed to callback.
-
-    Args:
-        ws_url: WebSocket RPC endpoint (e.g. wss://api.devnet.solana.com).
-        program_id: Program to watch (e.g. Raydium AMM program ID).
-        callback: Async function called with each log notification dict.
-        commitment: 'confirmed' or 'finalized'.
+    Used by the on-chain monitor to detect new Raydium pool creation events
+    without polling. Each new log mentioning the program is passed to callback.
     """
-    import websockets  # type: ignore — optional heavy dep, lazy import
+    import websockets  # type: ignore
 
     subscribe_msg = {
         "jsonrpc": "2.0",
@@ -299,7 +272,7 @@ async def subscribe_program_logs(
             async with websockets.connect(ws_url, ping_interval=20) as ws:
                 await ws.send(json.dumps(subscribe_msg))
                 logger.info(f"Subscribed to logs for program {program_id}")
-                retry_delay = 1  # reset on successful connect
+                retry_delay = 1
 
                 async for raw in ws:
                     try:
@@ -310,24 +283,21 @@ async def subscribe_program_logs(
                         logger.debug(f"Non-JSON WS message: {raw[:100]}")
 
         except Exception as exc:
-            logger.warning(
-                f"WebSocket error ({exc}), reconnecting in {retry_delay}s..."
-            )
+            logger.warning(f"WebSocket error ({exc}), reconnecting in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)  # cap at 60s
+            retry_delay = min(retry_delay * 2, 60)
 
 
 # ---------------------------------------------------------------------------
-# Simple sync wrapper for use in non-async contexts
+# Sync wrapper for non-async contexts
 # ---------------------------------------------------------------------------
 
 class SyncRPCClient:
-    """
-    Synchronous wrapper around SolanaRPCClient for scripts that don't use asyncio.
-    Creates a private event loop internally.
-    """
+    """Synchronous wrapper around SolanaRPCClient for scripts that don't use asyncio."""
 
-    def __init__(self, network: str = "devnet"):
+    def __init__(self, network: str = None):
+        if network is None:
+            network = os.getenv("NETWORK", "devnet").lower()
         self.network = network
         self._loop = asyncio.new_event_loop()
 

@@ -17,6 +17,7 @@ This pipeline is only triggered AFTER manual approval by the operator.
 
 import asyncio
 import json
+import os
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -38,6 +39,8 @@ from utils.helpers import load_config
 
 logger = get_logger(__name__)
 
+NETWORK = os.getenv("NETWORK", "devnet").lower()
+
 
 class DeploymentPipeline:
     """
@@ -50,10 +53,21 @@ class DeploymentPipeline:
 
     def __init__(self):
         cfg = load_config()
-        if cfg.get("network") == "mainnet-beta":
-            raise ValueError("MAINNET BLOCKED: devnet only.")
+        network_raw = cfg.get("network", "devnet")
+        if isinstance(network_raw, dict):
+            config_network = network_raw.get("name", "devnet")
+        else:
+            config_network = network_raw
+        self._network = os.getenv("NETWORK", config_network).lower()
 
-        self._network = cfg.get("network", "devnet")
+        if self._network == "mainnet":
+            confirm = input(
+                "⚠️  YOU ARE DEPLOYING TO MAINNET - REAL MONEY. "
+                "Type 'YES_MAINNET' to continue: "
+            )
+            if confirm != "YES_MAINNET":
+                raise SystemExit("Mainnet deployment aborted.")
+
         self._metadata_provider = cfg.get("metadata", {}).get("provider", "local_uri")
         self._local_port = cfg.get("metadata", {}).get("local_server_port", 8765)
         self._metadata_server: Optional[HTTPServer] = None
@@ -74,7 +88,6 @@ class DeploymentPipeline:
         """
         log_banner(logger, f"DEPLOYING: {spec.new_name} ({spec.new_symbol})")
 
-        # Create deployment DB record
         deployment_id = insert_deployment(
             generated_token_id=spec.db_id or 0,
             network=self._network,
@@ -92,13 +105,11 @@ class DeploymentPipeline:
         }
 
         try:
-            # Step 1: Prepare and host metadata
             metadata_uri = await self._prepare_metadata(spec)
             spec.metadata_uri = metadata_uri
             result["steps_completed"].append("metadata")
             logger.info(f"Metadata URI: {metadata_uri}")
 
-            # Step 2: Deploy SPL token mint
             token_deployer = SPLTokenDeployer()
             token_result = await token_deployer.deploy_token(spec, deployment_id)
 
@@ -116,7 +127,6 @@ class DeploymentPipeline:
                 status="partial",
             )
 
-            # Step 3: Attach Metaplex metadata
             logger.info("Attaching on-chain metadata via Metaplex...")
             meta_attacher = MetadataAttacher()
             metadata_tx = await meta_attacher.attach(
@@ -128,7 +138,6 @@ class DeploymentPipeline:
             update_deployment(deployment_id, metadata_tx=metadata_tx)
             result["steps_completed"].append("metadata_onchain")
 
-            # Step 4: Raydium pool deployment (market + AMM)
             logger.info("Creating Raydium pool...")
             raydium_deployer = RaydiumDeployer()
             raydium_result = await raydium_deployer.deploy(
@@ -184,7 +193,6 @@ class DeploymentPipeline:
         generator = TokenGenerator()
 
         if self._metadata_provider == "local_uri":
-            # Save locally + serve via a simple HTTP server
             local_path = generator.save_metadata_locally(spec)
             uri = self._start_local_metadata_server(spec.new_symbol)
             return uri
@@ -194,7 +202,6 @@ class DeploymentPipeline:
             return uri
 
         else:
-            # Fallback: use a data URI (not ideal but always works)
             import base64
             json_bytes = json.dumps(spec.metadata_json).encode()
             b64 = base64.b64encode(json_bytes).decode()
@@ -213,7 +220,7 @@ class DeploymentPipeline:
                 super().__init__(*args, directory=str(metadata_dir), **kwargs)
 
             def log_message(self, format, *args):
-                pass  # suppress request logs
+                pass
 
         server = HTTPServer(("127.0.0.1", port), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

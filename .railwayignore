@@ -1,0 +1,13 @@
+# Files excluded from Railway build context
+.git
+.env
+config.yaml
+data/
+*.log
+__pycache__
+.pytest_cache
+venv/
+node_modules/
+*.pyc
+*.pyo
+.DS_Store

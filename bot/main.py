@@ -15,6 +15,9 @@ Usage:
   # Full pipeline with approval gate:
   python -m bot.main --mode full --network devnet
 
+  # Mainnet (requires YES_MAINNET confirmation at deploy time):
+  python -m bot.main --mode full --network mainnet
+
   # Run once and exit:
   python -m bot.main --mode full --once
 
@@ -37,7 +40,8 @@ from utils.logger import get_logger, log_banner
 
 logger = get_logger(__name__)
 
-# ANSI banner for startup
+NETWORK = os.getenv("NETWORK", "devnet").lower()
+
 BANNER = r"""
 ╔══════════════════════════════════════════════════════════╗
 ║   SOLANA MEME COIN EDUCATIONAL DETECTION SYSTEM         ║
@@ -55,6 +59,7 @@ def parse_args() -> argparse.Namespace:
 Examples:
   python -m bot.main --mode monitor-only
   python -m bot.main --mode full --network devnet --once
+  python -m bot.main --mode full --network mainnet
   python -m bot.main --mode analyze-only --interval 30
         """,
     )
@@ -66,9 +71,9 @@ Examples:
     )
     parser.add_argument(
         "--network",
-        choices=["devnet", "testnet"],
-        default="devnet",
-        help="Solana network (NEVER mainnet-beta)",
+        choices=["devnet", "testnet", "mainnet"],
+        default=NETWORK,
+        help="Solana network (default: NETWORK env var or devnet)",
     )
     parser.add_argument(
         "--once",
@@ -92,12 +97,9 @@ Examples:
 
 async def run_bot(args: argparse.Namespace) -> None:
     """Main async bot loop."""
-    # Safety check
-    if args.network == "mainnet-beta":
-        logger.error("MAINNET BLOCKED: This educational system will not operate on mainnet.")
-        sys.exit(1)
+    # Propagate --network flag to env so subprocesses and modules pick it up
+    os.environ["NETWORK"] = args.network
 
-    # Environment setup
     load_env()
     ensure_data_dir()
     initialize_db()
@@ -112,6 +114,8 @@ async def run_bot(args: argparse.Namespace) -> None:
     if args.mode == "full":
         logger.info("Full pipeline mode — APPROVAL GATE IS ACTIVE")
         logger.info("You will be prompted to approve each deployment.")
+        if args.network == "mainnet":
+            logger.warning("MAINNET MODE — deployments use real SOL. Handle with care.")
 
     pipeline = BotPipeline(mode=args.mode)
     cycle = 0
